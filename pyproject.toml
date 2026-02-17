@@ -1,0 +1,17 @@
+[project]
+name = "kicad-edit-mcp"
+version = "0.1.0"
+description = "KiCad schematic/project modification MCP server"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp",
+    "kiutils",
+    "pyyaml",
+]
+
+[project.scripts]
+kicad-edit-mcp = "server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
