@@ -1,0 +1,12 @@
+# kicad-edit-mcp tool configuration
+# All tools enabled by default. Set to false to disable.
+# Disabled tools are not registered with MCP (LLM cannot see them).
+
+tools:
+  list_components: true      # Read: list components with refs, values, footprints
+  get_component: true        # Read: get all properties of a component by reference
+  update_component: true     # Write: set/remove component properties
+  update_schematic_info: true # Write: modify title block metadata (title, rev, date, author, company)
+  rename_net: true           # Write: rename net labels in schematic
+  list_net_classes: true     # Read: list net class rules and pattern assignments
+  update_net_class: true     # Write: create/modify net class rules and patterns
