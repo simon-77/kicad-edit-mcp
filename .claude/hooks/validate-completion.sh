@@ -11,10 +11,14 @@ AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // empty')
 [[ -z "$AGENT_TRANSCRIPT" || ! -f "$AGENT_TRANSCRIPT" ]] && echo '{"decision":"approve"}' && exit 0
 
 # Extract last assistant text response
+# Note: avoid != operator (sandbox escapes ! to \!)
 LAST_RESPONSE=$(tail -200 "$AGENT_TRANSCRIPT" | jq -rs '
-  [.[] | select(.message?.role == "assistant" and .message?.content != null)
-   | .message.content[] | select(.text != null) | .text] | last // ""
+  [.[] | select(.message?.role == "assistant") | .message.content[]?
+   | select(.text) | .text] | last // ""
 ' 2>/dev/null || echo "")
+
+# DEBUG: embed last response info in block reason for diagnosis
+_LAST_PREVIEW=$(echo "$LAST_RESPONSE" | head -c 120 | tr '\n' '|')
 
 # === LAYER 1: Extract subagent_type from transcript (fail open) ===
 SUBAGENT_TYPE=""
@@ -52,8 +56,8 @@ NEEDS_VERIFICATION="false"
 
 # Check 1: Completion format required for supervisors
 if [[ "$IS_SUPERVISOR" == "true" ]] && [[ "$HAS_BEAD_COMPLETE" -lt 1 || "$HAS_WORKTREE_OR_BRANCH" -lt 1 ]]; then
-  cat << 'EOF'
-{"decision":"block","reason":"Work verification failed: completion report missing.\n\nRequired format:\nBEAD {BEAD_ID} COMPLETE\nWorktree: .worktrees/bd-{BEAD_ID}\nFiles: [list]\nTests: pass\nSummary: [1 sentence]"}
+  cat << EOF
+{"decision":"block","reason":"Work verification failed: completion report missing.\n\nRequired format:\nBEAD {BEAD_ID} COMPLETE\nWorktree: .worktrees/bd-{BEAD_ID}\nFiles: [list]\nTests: pass\nSummary: [1 sentence]\n\nDBG bead=${HAS_BEAD_COMPLETE} wt=${HAS_WORKTREE_OR_BRANCH} lines=$(wc -l < \"$AGENT_TRANSCRIPT\") last=${_LAST_PREVIEW}"}
 EOF
   exit 0
 fi
@@ -77,8 +81,8 @@ REPO_ROOT=$(cd "$(git rev-parse --git-common-dir)/.." 2>/dev/null && pwd)
 WORKTREE_PATH="$REPO_ROOT/.worktrees/bd-${BEAD_ID_FROM_RESPONSE}"
 
 if [[ ! -d "$WORKTREE_PATH" ]]; then
-  cat << 'EOF'
-{"decision":"block","reason":"Work verification failed: worktree not found.\n\nCreate worktree first via API."}
+  cat << EOF
+{"decision":"block","reason":"Work verification failed: worktree not found.\n\nPath checked: $WORKTREE_PATH\nREPO_ROOT: $REPO_ROOT\nBEAD_ID: $BEAD_ID_FROM_RESPONSE"}
 EOF
   exit 0
 fi
