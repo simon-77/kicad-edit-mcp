@@ -1,0 +1,52 @@
+# Beads task tracking (ephemeral)
+.beads/
+
+# Worktrees (per-task isolation)
+.worktrees/
+
+# MCP config (user-specific paths)
+.mcp.json
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.venv/
+venv/
+
+# Claude tools
+.claude-tools/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Empty file artifacts from cloud sync
+.claude/commands
+
+# Cloud sync artifacts (Nextcloud creates 0-byte copies)
+/HEAD
+/config
+/hooks
+/objects
+/refs
+/.gitmodules
+/.gitconfig
+/.ripgreprc
+/.bash_profile
+/.bashrc
+/.profile
+/.zprofile
+/.zshrc
