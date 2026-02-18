@@ -6,7 +6,6 @@ requires-python = ">=3.11"
 dependencies = [
     "fastmcp",
     "kiutils",
-    "pyyaml",
 ]
 
 [project.scripts]

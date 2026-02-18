@@ -1,22 +1,21 @@
 """FastMCP server for kicad-edit-mcp.
 
-Loads tool config from config.yaml (optional) and registers only enabled tools.
+Tool lockdown is configured via the DISABLED_TOOLS env var (comma-separated
+tool names). Tools not listed are enabled by default (opt-out model).
 """
 
 from __future__ import annotations
 
-import argparse
+import os
 import sys
-from pathlib import Path
 from typing import Any, Optional
 
-import yaml
 from fastmcp import FastMCP
 
 import kicad_helpers
 
 # ---------------------------------------------------------------------------
-# Config loading
+# Config: env-var-driven tool enable/disable
 # ---------------------------------------------------------------------------
 
 _KNOWN_TOOLS = {
@@ -29,58 +28,17 @@ _KNOWN_TOOLS = {
     "update_net_class",
 }
 
+_raw = os.environ.get("DISABLED_TOOLS", "")
+_disabled = set(t.strip() for t in _raw.split(",") if t.strip())
 
-def _load_config(config_path: Optional[Path]) -> dict[str, bool]:
-    """Return mapping of tool_name -> enabled (True/False).
-
-    All tools default to enabled (opt-out model).
-    """
-    enabled: dict[str, bool] = {name: True for name in _KNOWN_TOOLS}
-
-    if config_path is None:
-        # Default: look next to server.py
-        default = Path(__file__).parent / "config.yaml"
-        if default.exists():
-            config_path = default
-
-    if config_path is None:
-        return enabled
-
-    with config_path.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
-
-    tools_section: dict = raw.get("tools", {})
-
-    for name, value in tools_section.items():
-        if name not in _KNOWN_TOOLS:
-            print(
-                f"kicad-edit-mcp: WARNING unknown tool in config: '{name}'",
-                file=sys.stderr,
-            )
-        else:
-            enabled[name] = bool(value)
-
-    return enabled
-
-
-def _parse_args() -> Optional[Path]:
-    parser = argparse.ArgumentParser(
-        description="kicad-edit-mcp FastMCP server",
-        add_help=True,
+_unknown = _disabled - _KNOWN_TOOLS
+for name in sorted(_unknown):
+    print(
+        f"kicad-edit-mcp: WARNING unknown tool '{name}' in DISABLED_TOOLS (ignored)",
+        file=sys.stderr,
     )
-    parser.add_argument(
-        "--config",
-        metavar="PATH",
-        help="Path to config.yaml (default: config.yaml next to server.py)",
-        default=None,
-    )
-    args, _ = parser.parse_known_args()
-    return Path(args.config) if args.config else None
 
-
-# Parse args and load config at module level so tool registration happens once.
-_config_path = _parse_args()
-_enabled = _load_config(_config_path)
+_enabled = {name: name not in _disabled for name in _KNOWN_TOOLS}
 
 # ---------------------------------------------------------------------------
 # Startup logging
