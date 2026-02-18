@@ -7,3 +7,36 @@ dist/
 build/
 .claude-tools/
 pytest-of-*/
+
+# IDE
+.idea/
+.vscode/
+
+# Local config
+.mcp.json
+
+# Worktrees
+.worktrees/
+
+# Sandbox artifacts (Claude Code sandbox leaks home dotfiles)
+.bash_profile
+.bashrc
+.zshrc
+.zprofile
+.profile
+.gitconfig
+.gitmodules
+.ripgreprc
+
+# Git internals (sandbox artifacts)
+HEAD
+config
+hooks/
+objects/
+refs/
+
+# Beads local-only files
+.beads/daemon-error
+.beads/*.db
+.beads/*.db-wal
+.beads/*.db-shm
