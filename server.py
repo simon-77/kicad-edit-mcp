@@ -110,10 +110,9 @@ if _enabled["update_component"]:
     ) -> str:
         """Set or remove properties on a schematic component and save the file.
 
-        Use None as a value to remove a property. The special key 'dnp' sets the
-        do-not-populate flag (boolean). For explicit visibility control, pass a dict:
-        {"value": "3.3V", "visible": true}. New properties are hidden by default
-        (except Reference and Value).
+        Use None as a value to remove a property. For explicit visibility control,
+        pass a dict: {"value": "3.3V", "visible": true}. New properties are hidden
+        by default (except Reference and Value). The "dnp" key is not supported.
 
         Args:
             schematic_path: Path to a .kicad_sch file.

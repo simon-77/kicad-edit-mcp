@@ -5,7 +5,7 @@ description = "KiCad schematic/project modification MCP server"
 requires-python = ">=3.11"
 dependencies = [
     "fastmcp",
-    "kiutils",
+    "kicad-sch-api",
 ]
 
 [project.scripts]
