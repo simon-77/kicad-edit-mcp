@@ -26,8 +26,8 @@ This makes the server safe to run against production schematics — the worst ca
 | Tool | Type | Description |
 |------|------|-------------|
 | `list_components` | Read | List all components with references, values, and footprints |
-| `get_component` | Read | Get all properties of a component by reference designator |
-| `update_component` | Write | Set or remove component properties (value, footprint, datasheet, custom fields) |
+| `get_component` | Read | Get all properties of a component by reference designator, including visibility info |
+| `update_component` | Write | Set or remove component properties; supports visibility control via `{"value": ..., "visible": bool}` |
 | `update_schematic_info` | Write | Modify title block metadata (title, revision, date, author, company) |
 | `rename_net` | Write | Rename net labels throughout a schematic |
 | `list_net_classes` | Read | List net class rules and pattern assignments |
