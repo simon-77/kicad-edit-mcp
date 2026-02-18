@@ -132,27 +132,25 @@ The SubagentStop hook verifies: worktree exists, no uncommitted changes, pushed 
 
 ## Tech Stack
 
-Python 3.11+, MCP SDK (modelcontextprotocol), pytest, mypy, ruff, Poetry
+Python 3.11+, FastMCP, kiutils, pyyaml, pytest, mypy, ruff, setuptools
 
 ## Project Structure
 
-This is an MCP server project. Typical layout:
 ```
-src/
-  kicad_edit_mcp/
-    __init__.py
-    server.py      # MCP server entrypoint
-    tools/         # MCP tool handlers
-    parsers/       # KiCad file parsers
+server.py          # FastMCP server entrypoint, tool registration
+kicad_helpers.py   # kiutils wrapper functions (7 tools)
 tests/
-pyproject.toml
+  test_helpers.py
+  test_server.py
+  fixtures/
+pyproject.toml     # setuptools build, deps: fastmcp, kiutils, pyyaml
 ```
 
 ## Scope
 
 **You handle:**
-- Python MCP server implementation
-- KiCad file parsing (.kicad_pcb, .kicad_sch, .kicad_mod)
+- Python MCP server implementation (FastMCP)
+- KiCad file parsing via kiutils (.kicad_pcb, .kicad_sch, .kicad_mod)
 - MCP tool definitions and handlers
 - Unit and integration tests
 - Type annotations, linting, formatting
@@ -166,9 +164,9 @@ pyproject.toml
 - PEP 8 compliance enforced via ruff
 - Type hints on ALL function signatures
 - Google-style docstrings
-- 90%+ test coverage with pytest
+- pytest for testing
 - mypy strict mode
-- Poetry for dependency management
+- setuptools for packaging (pyproject.toml)
 - Prefer async/await for MCP tool handlers
 - Input validation on all MCP tool parameters
 - Never mutate files without explicit user intent (MCP edit tools must be safe)
