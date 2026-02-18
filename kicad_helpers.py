@@ -1,17 +1,99 @@
-"""Pure Python helper functions for KiCad file manipulation via kiutils.
+"""Pure Python helper functions for KiCad file manipulation via kicad-sch-api.
 
-No MCP imports — these are plain functions wired into server.py by BD-003.
+No MCP imports — these are plain functions wired into server.py.
 """
 
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
-from kiutils.items.common import Effects, Font, Property, TitleBlock
-from kiutils.schematic import Schematic
+import sexpdata
+
+from kicad_sch_api import Schematic
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_hidden_in_sexp(sexp: Any) -> bool:
+    """Return True if the property S-expression has a hide flag.
+
+    Handles both KiCad 6 bare ``Symbol('hide')`` and KiCad 9
+    ``[Symbol('hide'), Symbol('yes')]`` formats.
+    """
+    if not isinstance(sexp, list):
+        return False
+    for item in sexp:
+        if isinstance(item, list) and len(item) > 0:
+            if isinstance(item[0], sexpdata.Symbol) and str(item[0]) == "effects":
+                # Inspect the effects section
+                for eff_item in item[1:]:
+                    # KiCad 9: (hide yes) or bare (hide)
+                    if (
+                        isinstance(eff_item, list)
+                        and len(eff_item) > 0
+                        and isinstance(eff_item[0], sexpdata.Symbol)
+                        and str(eff_item[0]) == "hide"
+                    ):
+                        if len(eff_item) == 1:
+                            return True  # bare (hide)
+                        val = (
+                            str(eff_item[1]).lower()
+                            if isinstance(eff_item[1], sexpdata.Symbol)
+                            else ""
+                        )
+                        return val in ("yes", "true")
+                    # KiCad 6: bare Symbol('hide')
+                    if isinstance(eff_item, sexpdata.Symbol) and str(eff_item) == "hide":
+                        return True
+    return False
+
+
+def _sync_hidden_properties(comp: Any) -> None:
+    """Sync ``hidden_properties`` set from preserved ``__sexp_`` entries.
+
+    The kicad-sch-api parser silently drops bare ``hide`` tokens (KiCad 6
+    format).  This function fixes up ``hidden_properties`` by reading the
+    preserved S-expressions directly.
+    """
+    hidden: set[str] = set()
+    for key, val in comp._data.properties.items():
+        if key.startswith("__sexp_"):
+            prop_name = key[len("__sexp_"):]
+            if _is_hidden_in_sexp(val):
+                hidden.add(prop_name)
+    comp._data.hidden_properties = hidden
+
+
+def _set_property_hidden(comp: Any, prop_name: str, hidden: bool) -> None:
+    """Update the hide flag for a property in both ``hidden_properties`` and ``__sexp_``.
+
+    Args:
+        comp: ``Component`` object from kicad-sch-api.
+        prop_name: Property name, e.g. "Footprint".
+        hidden: True to hide, False to show.
+    """
+    if hidden:
+        comp._data.hidden_properties.add(prop_name)
+    else:
+        comp._data.hidden_properties.discard(prop_name)
+
+    # Also update the preserved S-expression so serialization is consistent.
+    sexp_key = f"__sexp_{prop_name}"
+    sexp = comp._data.properties.get(sexp_key)
+    if sexp is not None:
+        from kicad_sch_api.parsers.elements.symbol_parser import SymbolParser
+
+        parser = SymbolParser()
+        updated = parser._update_property_hide_flag(list(sexp), hidden)
+        comp._data.properties[sexp_key] = updated
+
+
+_ALWAYS_VISIBLE_PROPS = {"Reference", "Value"}
 
 
 # ---------------------------------------------------------------------------
@@ -38,21 +120,20 @@ def list_components(schematic_path: str, filter: Optional[str] = None) -> list[d
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        schematic = Schematic.from_file(str(path))
+        sch = Schematic.load(str(path))
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
     results: list[dict] = []
-    for sym in schematic.schematicSymbols:
-        props = {p.key: p.value for p in sym.properties}
-        reference = props.get("Reference", "")
-        if filter is not None and not reference.startswith(filter):
+    for comp in sch.components:
+        ref = comp.reference
+        if filter is not None and not ref.startswith(filter):
             continue
         results.append(
             {
-                "reference": reference,
-                "value": props.get("Value", ""),
-                "footprint": props.get("Footprint", ""),
+                "reference": ref,
+                "value": comp.value,
+                "footprint": comp.footprint or "",
             }
         )
     return results
@@ -79,33 +160,28 @@ def get_component(schematic_path: str, reference: str) -> dict:
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        schematic = Schematic.from_file(str(path))
+        sch = Schematic.load(str(path))
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
-    for sym in schematic.schematicSymbols:
-        raw_props = {p.key: p.value for p in sym.properties}
-        if raw_props.get("Reference") == reference:
-            props: dict[str, Any] = {}
-            for p in sym.properties:
-                hidden = p.effects.hide if p.effects else False
-                props[p.key] = {"value": p.value, "visible": not hidden}
-            return props
+    comp = sch.components.get(reference)
+    if comp is None:
+        raise ValueError(f"Component '{reference}' not found in {schematic_path}")
 
-    raise ValueError(f"Component '{reference}' not found in {schematic_path}")
+    _sync_hidden_properties(comp)
 
+    props: dict[str, Any] = {}
+    for name, val in comp.properties.items():
+        if name.startswith("__sexp_"):
+            continue
+        if isinstance(val, dict):
+            raw_value = val.get("value", "")
+        else:
+            raw_value = str(val)
+        hidden = name in comp._data.hidden_properties
+        props[name] = {"value": raw_value, "visible": not hidden}
 
-_ALWAYS_VISIBLE_PROPS = {"Reference", "Value"}
-
-
-def _make_effects(hide: bool) -> Effects:
-    """Return an Effects instance with standard KiCad font size."""
-    effects = Effects()
-    effects.font = Font()
-    effects.font.height = 1.27
-    effects.font.width = 1.27
-    effects.hide = hide
-    return effects
+    return props
 
 
 def update_component(
@@ -119,71 +195,69 @@ def update_component(
 
     - ``{"Value": "100nF"}`` — set the property to a new value.
     - ``{"Voltage": None}`` — remove the property entirely.
-    - ``{"dnp": True}`` — set the ``dnp`` flag on the symbol (boolean).
     - ``{"Voltage": {"value": "3.3V", "visible": False}}`` — set value with
       explicit visibility control.  New custom properties default to hidden
       (``visible=False``) unless overridden here.
+
+    Note: The ``"dnp"`` key is not supported and raises ``ValueError``.
 
     Args:
         schematic_path: Path to a .kicad_sch file.
         reference: Exact reference designator, e.g. "C5".
         properties: Mapping of property key → new value (or ``None`` to
-            remove).  The special key ``"dnp"`` controls the do-not-populate
-            flag rather than a text property.
+            remove).
 
     Returns:
         Human-readable success message describing the changes.
 
     Raises:
-        ValueError: If the file doesn't exist, can't be parsed, or the
-            component is not found.
+        ValueError: If the file doesn't exist, can't be parsed, the
+            component is not found, or ``"dnp"`` is passed.
     """
+    if "dnp" in properties:
+        raise ValueError(
+            "'dnp' flag is not supported — use in_bom/on_board or a custom property instead"
+        )
+
     path = Path(schematic_path)
     if not path.exists():
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        schematic = Schematic.from_file(str(path))
+        sch = Schematic.load(str(path))
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
-    target = None
-    for sym in schematic.schematicSymbols:
-        sym_props = {p.key: p.value for p in sym.properties}
-        if sym_props.get("Reference") == reference:
-            target = sym
-            break
-
-    if target is None:
+    comp = sch.components.get(reference)
+    if comp is None:
         raise ValueError(f"Component '{reference}' not found in {schematic_path}")
+
+    # Fix hidden_properties from preserved S-expressions before making changes.
+    _sync_hidden_properties(comp)
 
     changes: list[str] = []
 
     for key, value in properties.items():
-        # Special-case: dnp is a struct field, not a text property
-        if key == "dnp":
-            old_dnp = target.dnp
-            target.dnp = bool(value) if value is not None else False
-            changes.append(f"dnp={target.dnp} (was {old_dnp})")
-            continue
-
         if value is None:
             # Remove the property
-            before = len(target.properties)
-            target.properties = [p for p in target.properties if p.key != key]
-            removed = before - len(target.properties)
+            removed = comp.remove_property(key)
+            # Also clean up the preserved S-expression and hidden set
+            sexp_key = f"__sexp_{key}"
+            comp._data.properties.pop(sexp_key, None)
+            comp._data.hidden_properties.discard(key)
             if removed:
                 changes.append(f"removed '{key}'")
             else:
                 changes.append(f"'{key}' not present (no-op)")
         else:
-            # Validate rich dict format before normalization
+            # Validate rich dict format
             if isinstance(value, dict) and "value" not in value:
                 raise ValueError(
                     f"Property '{key}': dict value must have a 'value' key, "
                     f"e.g. {{'value': '3.3V', 'visible': False}}"
                 )
-            # Normalize value: plain string or {"value": ..., "visible": ...}
+
+            # Normalize to raw_value + explicit_visible
             if isinstance(value, dict) and "value" in value:
                 raw_value: str = str(value["value"])
                 explicit_visible: Optional[bool] = value.get("visible")
@@ -191,30 +265,52 @@ def update_component(
                 raw_value = str(value)
                 explicit_visible = None
 
-            # Set or update
-            existing = next((p for p in target.properties if p.key == key), None)
-            if existing is not None:
-                old_val = existing.value
-                existing.value = raw_value
-                # Apply explicit visibility if requested and effects exist
-                if explicit_visible is not None and existing.effects is not None:
-                    existing.effects.hide = not explicit_visible
+            # Check if property already exists
+            existing_props = {
+                k: v for k, v in comp.properties.items() if not k.startswith("__sexp_")
+            }
+            prop_exists = key in existing_props
+
+            if prop_exists:
+                old_val = existing_props[key]
+                if isinstance(old_val, dict):
+                    old_val = old_val.get("value", "")
+
+                comp.set_property(key, raw_value)
+
+                # Standard properties have dedicated _data fields that
+                # _symbol_to_sexp reads directly — update them too.
+                if key == "Value":
+                    comp._data.value = raw_value
+                elif key == "Reference":
+                    comp._data.reference = raw_value
+                elif key == "Footprint":
+                    comp._data.footprint = raw_value
+
+                # Also update value in preserved __sexp_
+                sexp_key = f"__sexp_{key}"
+                sexp = comp._data.properties.get(sexp_key)
+                if sexp is not None and isinstance(sexp, list) and len(sexp) >= 3:
+                    sexp = list(sexp)
+                    sexp[2] = raw_value
+                    comp._data.properties[sexp_key] = sexp
+
+                # Apply explicit visibility if provided (else preserve existing)
+                if explicit_visible is not None:
+                    _set_property_hidden(comp, key, not explicit_visible)
+
                 changes.append(f"'{key}': '{old_val}' -> '{raw_value}'")
             else:
                 # New property — default hide=True for non-Reference/Value props
                 default_hide = key not in _ALWAYS_VISIBLE_PROPS
-                if explicit_visible is not None:
-                    hide = not explicit_visible
-                else:
-                    hide = default_hide
-                new_prop = Property(key=key, value=raw_value, effects=_make_effects(hide))
-                # Anchor new property at the component's placement coordinate
-                new_prop.position = deepcopy(target.position)
-                target.properties.append(new_prop)
+                hide = (not explicit_visible) if explicit_visible is not None else default_hide
+
+                # Use add_property on the underlying SchematicSymbol
+                comp._data.add_property(key, raw_value, hidden=hide)
                 changes.append(f"added '{key}'='{raw_value}'")
 
     try:
-        schematic.to_file()
+        sch.save()
     except Exception as exc:
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 
@@ -232,9 +328,7 @@ def update_schematic_info(
 ) -> str:
     """Update title block metadata in a schematic.
 
-    Note: kiutils TitleBlock has no ``author`` field (KiCad stores it in
-    comment 1 by convention).  This function uses comment slot 1 for the
-    author when provided.
+    Note: author is stored in title block comment 1 by KiCad convention.
 
     Args:
         schematic_path: Path to a .kicad_sch file.
@@ -255,36 +349,46 @@ def update_schematic_info(
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        schematic = Schematic.from_file(str(path))
+        sch = Schematic.load(str(path))
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
-    # Ensure title block exists
-    if schematic.titleBlock is None:
-        schematic.titleBlock = TitleBlock()
+    # Read current title block values (preserve fields not being updated)
+    tb = sch.title_block  # dict: {title, rev, date, company, comments}
+    current_title = tb.get("title", "")
+    current_rev = tb.get("rev", "")
+    current_date = tb.get("date", "")
+    current_company = tb.get("company", "")
+    current_comments: dict = dict(tb.get("comments", {}))
 
-    tb = schematic.titleBlock
     updated: list[str] = []
 
     if title is not None:
-        tb.title = title
+        current_title = title
         updated.append(f"title='{title}'")
     if revision is not None:
-        tb.revision = revision
+        current_rev = revision
         updated.append(f"revision='{revision}'")
     if date is not None:
-        tb.date = date
+        current_date = date
         updated.append(f"date='{date}'")
     if company is not None:
-        tb.company = company
+        current_company = company
         updated.append(f"company='{company}'")
     if author is not None:
-        # KiCad stores author in comment 1 by convention
-        tb.comments[1] = author
+        current_comments[1] = author
         updated.append(f"author='{author}' (comment 1)")
 
+    sch.set_title_block(
+        title=current_title,
+        date=current_date,
+        rev=current_rev,
+        company=current_company,
+        comments=current_comments,
+    )
+
     try:
-        schematic.to_file()
+        sch.save()
     except Exception as exc:
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 
@@ -295,7 +399,8 @@ def update_schematic_info(
 def rename_net(schematic_path: str, old_name: str, new_name: str) -> str:
     """Rename all net labels matching ``old_name`` to ``new_name``.
 
-    Searches local labels, global labels, and hierarchical labels.
+    Searches local and hierarchical labels. Note: global labels are not
+    exposed by kicad-sch-api's label collection at this time.
 
     Args:
         schematic_path: Path to a .kicad_sch file.
@@ -313,23 +418,18 @@ def rename_net(schematic_path: str, old_name: str, new_name: str) -> str:
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        schematic = Schematic.from_file(str(path))
+        sch = Schematic.load(str(path))
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
     count = 0
 
-    for label in schematic.labels:
+    for label in sch.labels:
         if label.text == old_name:
             label.text = new_name
             count += 1
 
-    for label in schematic.globalLabels:
-        if label.text == old_name:
-            label.text = new_name
-            count += 1
-
-    for label in schematic.hierarchicalLabels:
+    for label in sch.hierarchical_labels:
         if label.text == old_name:
             label.text = new_name
             count += 1
@@ -338,7 +438,7 @@ def rename_net(schematic_path: str, old_name: str, new_name: str) -> str:
         return f"No labels named '{old_name}' found — nothing changed"
 
     try:
-        schematic.to_file()
+        sch.save()
     except Exception as exc:
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 

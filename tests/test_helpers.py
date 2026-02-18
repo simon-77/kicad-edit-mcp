@@ -13,6 +13,7 @@ import kicad_helpers
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SCH_FIXTURE = FIXTURES / "test_schematic.kicad_sch"
+SCH_V9_FIXTURE = FIXTURES / "test_schematic_v9.kicad_sch"
 PRO_FIXTURE = FIXTURES / "test_project.kicad_pro"
 
 
@@ -21,6 +22,14 @@ def sch(tmp_path: Path) -> Path:
     """Copy schematic fixture to tmp_path for safe mutation."""
     dest = tmp_path / "test.kicad_sch"
     shutil.copy(SCH_FIXTURE, dest)
+    return dest
+
+
+@pytest.fixture()
+def sch_v9(tmp_path: Path) -> Path:
+    """Copy KiCad 9 schematic fixture to tmp_path for safe mutation."""
+    dest = tmp_path / "test_v9.kicad_sch"
+    shutil.copy(SCH_V9_FIXTURE, dest)
     return dest
 
 
@@ -105,9 +114,10 @@ def test_update_component_remove_property(sch: Path) -> None:
     assert "Datasheet" not in props
 
 
-def test_update_component_set_dnp(sch: Path) -> None:
-    result = kicad_helpers.update_component(str(sch), "C1", {"dnp": True})
-    assert "dnp=True" in result
+def test_update_component_dnp_raises(sch: Path) -> None:
+    """dnp key must raise ValueError — feature removed."""
+    with pytest.raises(ValueError, match="dnp"):
+        kicad_helpers.update_component(str(sch), "C1", {"dnp": True})
 
 
 def test_update_component_missing_ref(sch: Path) -> None:
@@ -144,8 +154,6 @@ def test_new_property_defaults_hidden(sch: Path) -> None:
 
 def test_new_reference_value_default_visible(sch: Path) -> None:
     """Reference/Value properties added as new are visible by convention."""
-    # Use a component without Value override — add a brand new key named like
-    # "Value" to a fresh copy; easier: just verify existing Value is visible.
     props = kicad_helpers.get_component(str(sch), "R1")
     assert props["Reference"]["visible"] is True
     assert props["Value"]["visible"] is True
@@ -183,6 +191,47 @@ def test_update_component_file_changed(sch: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# KiCad 9 regression tests — (hide yes) format preservation
+# ---------------------------------------------------------------------------
+
+
+def test_kicad9_get_component_visibility(sch_v9: Path) -> None:
+    """KiCad 9 fixture: (hide yes) parsed correctly as visible=False."""
+    props = kicad_helpers.get_component(str(sch_v9), "R1")
+    assert props["Reference"]["visible"] is True
+    assert props["Value"]["visible"] is True
+    assert props["Footprint"]["visible"] is False
+    assert props["Datasheet"]["visible"] is False
+
+
+def test_kicad9_update_preserves_hidden(sch_v9: Path) -> None:
+    """KiCad 9: updating Value must not make Footprint/Datasheet visible."""
+    kicad_helpers.update_component(str(sch_v9), "R1", {"Value": "4k7"})
+    props = kicad_helpers.get_component(str(sch_v9), "R1")
+    assert props["Footprint"]["visible"] is False
+    assert props["Datasheet"]["visible"] is False
+    assert props["Value"]["value"] == "4k7"
+
+
+def test_kicad9_roundtrip_format(sch_v9: Path) -> None:
+    """KiCad 9: saved file must preserve (hide yes) tokens."""
+    kicad_helpers.update_component(str(sch_v9), "R1", {"Value": "4k7"})
+    raw = sch_v9.read_text()
+    assert "(hide yes)" in raw
+
+
+def test_kicad9_all_components_preserved(sch_v9: Path) -> None:
+    """KiCad 9: all 3 components survive round-trip."""
+    kicad_helpers.update_component(str(sch_v9), "C1", {"Value": "220nF"})
+    comps = kicad_helpers.list_components(str(sch_v9))
+    refs = [c["reference"] for c in comps]
+    assert "R1" in refs
+    assert "C1" in refs
+    assert "U1" in refs
+    assert len(comps) == 3
+
+
+# ---------------------------------------------------------------------------
 # update_schematic_info
 # ---------------------------------------------------------------------------
 
@@ -190,19 +239,18 @@ def test_update_component_file_changed(sch: Path) -> None:
 def test_update_schematic_info_title(sch: Path) -> None:
     result = kicad_helpers.update_schematic_info(str(sch), title="New Title")
     assert "title" in result.lower()
-    # Verify by reloading
-    from kiutils.schematic import Schematic
-    s = Schematic.from_file(str(sch))
-    assert s.titleBlock is not None
-    assert s.titleBlock.title == "New Title"
+    # Verify by reloading with kicad-sch-api
+    from kicad_sch_api import Schematic
+    s = Schematic.load(str(sch))
+    assert s.title_block.get("title") == "New Title"
 
 
 def test_update_schematic_info_revision(sch: Path) -> None:
     result = kicad_helpers.update_schematic_info(str(sch), revision="2.1")
     assert "revision" in result.lower()
-    from kiutils.schematic import Schematic
-    s = Schematic.from_file(str(sch))
-    assert s.titleBlock.revision == "2.1"
+    from kicad_sch_api import Schematic
+    s = Schematic.load(str(sch))
+    assert s.title_block.get("rev") == "2.1"
 
 
 def test_update_schematic_info_no_args(sch: Path) -> None:
@@ -223,8 +271,8 @@ def test_rename_net_success(sch: Path) -> None:
 
 def test_rename_net_verifies_in_file(sch: Path) -> None:
     kicad_helpers.rename_net(str(sch), "SPI1_SCK", "SPI_CLK")
-    from kiutils.schematic import Schematic
-    s = Schematic.from_file(str(sch))
+    from kicad_sch_api import Schematic
+    s = Schematic.load(str(sch))
     texts = [lbl.text for lbl in s.labels]
     assert "SPI_CLK" in texts
     assert "SPI1_SCK" not in texts
