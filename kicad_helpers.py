@@ -200,6 +200,9 @@ def update_component(
                 else:
                     hide = default_hide
                 new_prop = Property(key=key, value=raw_value, effects=_make_effects(hide))
+                # Anchor new property near the component (avoid default 0,0 origin)
+                if target.properties:
+                    new_prop.position = target.properties[0].position
                 target.properties.append(new_prop)
                 changes.append(f"added '{key}'='{raw_value}'")
 
