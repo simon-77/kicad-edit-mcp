@@ -33,10 +33,66 @@ This makes the server safe to run against production schematics — the worst ca
 | `list_net_classes` | Read | List net class rules and pattern assignments |
 | `update_net_class` | Write | Create or modify net class rules and pattern assignments |
 
-## Installation
+## Docker (recommended)
+
+Build the image once:
 
 ```bash
-pip install fastmcp kiutils pyyaml
+docker build -t kicad-edit-mcp .
+```
+
+### Per-project `.mcp.json`
+
+Mount your KiCad project directory to `/data` inside the container:
+
+```json
+{
+  "mcpServers": {
+    "kicad-edit": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm",
+        "-v", "/path/to/kicad-project:/data",
+        "kicad-edit-mcp"]
+    }
+  }
+}
+```
+
+With tool lockdown via `DISABLED_TOOLS`:
+
+```json
+{
+  "mcpServers": {
+    "kicad-edit": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm",
+        "-v", "/path/to/kicad-project:/data",
+        "kicad-edit-mcp"],
+      "env": { "DISABLED_TOOLS": "rename_net,update_net_class" }
+    }
+  }
+}
+```
+
+Read-only mount (no writes possible at the filesystem level):
+
+```json
+{
+  "mcpServers": {
+    "kicad-edit": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm",
+        "-v", "/path/to/kicad-project:/data:ro",
+        "kicad-edit-mcp"]
+    }
+  }
+}
+```
+
+## Installation (local, without Docker)
+
+```bash
+pip install fastmcp kiutils
 ```
 
 Or with Poetry:
@@ -45,7 +101,7 @@ Or with Poetry:
 poetry install
 ```
 
-## Claude Code Registration
+## Local Registration
 
 Basic registration (all tools enabled):
 
@@ -53,48 +109,26 @@ Basic registration (all tools enabled):
 claude mcp add kicad-edit-mcp -- python /path/to/server.py
 ```
 
-With a custom config file:
+With tool lockdown via env var:
 
 ```bash
-claude mcp add kicad-edit-mcp -- python /path/to/server.py --config /path/to/config.yaml
-```
-
-Per-project override — place `.kicad-modify.yaml` in your project root:
-
-```bash
-claude mcp add kicad-edit-mcp -- python /path/to/server.py --config .kicad-modify.yaml
+DISABLED_TOOLS=rename_net,update_net_class claude mcp add kicad-edit-mcp -- python /path/to/server.py
 ```
 
 ## Tool Lockdown (Hard Guardrails)
 
 Tools are enabled by default (opt-out model). **Disabled tools are never registered with MCP** — the LLM cannot see, call, or even know they exist. This is a hard guardrail at the protocol level, not a soft prompt-based restriction.
 
-Use this to enforce per-project safety policies:
-
-```yaml
-# .kicad-modify.yaml — read-only mode (no write tools)
-tools:
-  list_components: true
-  get_component: true
-  update_component: false
-  update_schematic_info: false
-  rename_net: false
-  list_net_classes: true
-  update_net_class: false
-```
-
-Or allow writes but lock down net classes:
-
-```yaml
-# Only disable what you need to protect
-tools:
-  update_net_class: false       # net classes are read-only
-```
-
-Missing keys default to `true` (enabled). Unknown keys trigger a stderr warning (typo protection).
-
-Pass the config path via `--config`:
+Set the `DISABLED_TOOLS` environment variable to a comma-separated list of tool names to disable:
 
 ```bash
-python server.py --config .kicad-modify.yaml
+# Disable net editing tools
+DISABLED_TOOLS=rename_net,update_net_class python server.py
+
+# Disable all write tools
+DISABLED_TOOLS=update_component,update_schematic_info,rename_net,update_net_class python server.py
 ```
+
+Unknown tool names in `DISABLED_TOOLS` trigger a stderr warning (typo protection). Missing names default to enabled.
+
+For full read-only enforcement without listing every write tool, use a Docker read-only volume mount (`/data:ro`) — the filesystem enforces it regardless of which tools are registered.
