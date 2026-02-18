@@ -6,7 +6,6 @@ Loads tool config from config.yaml (optional) and registers only enabled tools.
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -132,6 +131,9 @@ if _enabled["get_component"]:
     def get_component(schematic_path: str, reference: str) -> dict:
         """Get all properties of a single schematic component by reference designator.
 
+        Returns a dict mapping property name to {value, visible}. The 'visible'
+        field indicates whether the property text is shown on the schematic.
+
         Args:
             schematic_path: Path to a .kicad_sch file.
             reference: Exact reference designator, e.g. 'C5'.
@@ -151,7 +153,9 @@ if _enabled["update_component"]:
         """Set or remove properties on a schematic component and save the file.
 
         Use None as a value to remove a property. The special key 'dnp' sets the
-        do-not-populate flag (boolean).
+        do-not-populate flag (boolean). For explicit visibility control, pass a dict:
+        {"value": "3.3V", "visible": true}. New properties are hidden by default
+        (except Reference and Value).
 
         Args:
             schematic_path: Path to a .kicad_sch file.

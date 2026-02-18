@@ -115,6 +115,11 @@ def test_update_component_missing_ref(sch: Path) -> None:
         kicad_helpers.update_component(str(sch), "MISSING", {"Value": "x"})
 
 
+def test_update_component_rejects_malformed_dict(sch: Path) -> None:
+    with pytest.raises(ValueError, match="must have a 'value' key"):
+        kicad_helpers.update_component(str(sch), "R1", {"Voltage": {"foo": "bar"}})
+
+
 # ---------------------------------------------------------------------------
 # Property visibility
 # ---------------------------------------------------------------------------

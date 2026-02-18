@@ -6,6 +6,7 @@ No MCP imports — these are plain functions wired into server.py by BD-003.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
@@ -65,8 +66,9 @@ def get_component(schematic_path: str, reference: str) -> dict:
         reference: Exact reference designator, e.g. "C5".
 
     Returns:
-        Dict mapping property name to value, e.g.
-        ``{"Reference": "C5", "Value": "100nF", ...}``.
+        Dict mapping property name to a dict with ``value`` and ``visible``
+        keys, e.g. ``{"Reference": {"value": "C5", "visible": True},
+        "Footprint": {"value": "...", "visible": False}}``.
 
     Raises:
         ValueError: If the file doesn't exist, can't be parsed, or the
@@ -118,9 +120,9 @@ def update_component(
     - ``{"Value": "100nF"}`` — set the property to a new value.
     - ``{"Voltage": None}`` — remove the property entirely.
     - ``{"dnp": True}`` — set the ``dnp`` flag on the symbol (boolean).
-    - ``{"Voltage": {"value": "3.3V", "visible": True}}`` — set with explicit
-      visibility.  New custom properties default to hidden (``visible=False``)
-      unless overridden here.
+    - ``{"Voltage": {"value": "3.3V", "visible": False}}`` — set value with
+      explicit visibility control.  New custom properties default to hidden
+      (``visible=False``) unless overridden here.
 
     Args:
         schematic_path: Path to a .kicad_sch file.
@@ -175,6 +177,12 @@ def update_component(
             else:
                 changes.append(f"'{key}' not present (no-op)")
         else:
+            # Validate rich dict format before normalization
+            if isinstance(value, dict) and "value" not in value:
+                raise ValueError(
+                    f"Property '{key}': dict value must have a 'value' key, "
+                    f"e.g. {{'value': '3.3V', 'visible': False}}"
+                )
             # Normalize value: plain string or {"value": ..., "visible": ...}
             if isinstance(value, dict) and "value" in value:
                 raw_value: str = str(value["value"])
@@ -201,7 +209,7 @@ def update_component(
                     hide = default_hide
                 new_prop = Property(key=key, value=raw_value, effects=_make_effects(hide))
                 # Anchor new property at the component's placement coordinate
-                new_prop.position = target.position
+                new_prop.position = deepcopy(target.position)
                 target.properties.append(new_prop)
                 changes.append(f"added '{key}'='{raw_value}'")
 
