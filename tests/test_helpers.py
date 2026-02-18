@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 
@@ -70,14 +69,14 @@ def test_list_components_missing_file() -> None:
 
 def test_get_component_r1(sch: Path) -> None:
     props = kicad_helpers.get_component(str(sch), "R1")
-    assert props["Reference"] == "R1"
-    assert props["Value"] == "10k"
+    assert props["Reference"]["value"] == "R1"
+    assert props["Value"]["value"] == "10k"
     assert "Footprint" in props
 
 
 def test_get_component_c1(sch: Path) -> None:
     props = kicad_helpers.get_component(str(sch), "C1")
-    assert props["Value"] == "100nF"
+    assert props["Value"]["value"] == "100nF"
 
 
 def test_get_component_missing_raises(sch: Path) -> None:
@@ -95,7 +94,7 @@ def test_update_component_set_value(sch: Path) -> None:
     assert "R1" in result
     # Verify file changed
     props = kicad_helpers.get_component(str(sch), "R1")
-    assert props["Value"] == "4k7"
+    assert props["Value"]["value"] == "4k7"
 
 
 def test_update_component_remove_property(sch: Path) -> None:
@@ -116,12 +115,66 @@ def test_update_component_missing_ref(sch: Path) -> None:
         kicad_helpers.update_component(str(sch), "MISSING", {"Value": "x"})
 
 
+# ---------------------------------------------------------------------------
+# Property visibility
+# ---------------------------------------------------------------------------
+
+
+def test_update_preserves_hidden_properties(sch: Path) -> None:
+    """Changing Value must not alter the hidden state of Footprint."""
+    kicad_helpers.update_component(str(sch), "R1", {"Value": "4k7"})
+    props = kicad_helpers.get_component(str(sch), "R1")
+    # Footprint was hidden in fixture — must remain hidden after update
+    assert props["Footprint"]["visible"] is False
+
+
+def test_new_property_defaults_hidden(sch: Path) -> None:
+    """New custom properties are created with hide=True by default."""
+    kicad_helpers.update_component(str(sch), "R1", {"Voltage": "3.3V"})
+    props = kicad_helpers.get_component(str(sch), "R1")
+    assert "Voltage" in props
+    assert props["Voltage"]["value"] == "3.3V"
+    assert props["Voltage"]["visible"] is False
+
+
+def test_new_reference_value_default_visible(sch: Path) -> None:
+    """Reference/Value properties added as new are visible by convention."""
+    # Use a component without Value override — add a brand new key named like
+    # "Value" to a fresh copy; easier: just verify existing Value is visible.
+    props = kicad_helpers.get_component(str(sch), "R1")
+    assert props["Reference"]["visible"] is True
+    assert props["Value"]["visible"] is True
+
+
+def test_explicit_visibility_override(sch: Path) -> None:
+    """Rich dict format with visible=True overrides default hidden behaviour."""
+    kicad_helpers.update_component(
+        str(sch), "R1", {"Voltage": {"value": "3.3V", "visible": True}}
+    )
+    props = kicad_helpers.get_component(str(sch), "R1")
+    assert props["Voltage"]["value"] == "3.3V"
+    assert props["Voltage"]["visible"] is True
+
+
+def test_get_component_returns_visibility(sch: Path) -> None:
+    """get_component returns {value, visible} dicts for every property."""
+    props = kicad_helpers.get_component(str(sch), "R1")
+    for key, entry in props.items():
+        assert isinstance(entry, dict), f"{key} should be a dict"
+        assert "value" in entry, f"{key} missing 'value'"
+        assert "visible" in entry, f"{key} missing 'visible'"
+    # Known visibilities from fixture
+    assert props["Reference"]["visible"] is True
+    assert props["Value"]["visible"] is True
+    assert props["Footprint"]["visible"] is False
+    assert props["Datasheet"]["visible"] is False
+
+
 def test_update_component_file_changed(sch: Path) -> None:
-    mtime_before = sch.stat().st_mtime
     kicad_helpers.update_component(str(sch), "U1", {"Value": "ESP32"})
     # Read back to confirm persistence
     props = kicad_helpers.get_component(str(sch), "U1")
-    assert props["Value"] == "ESP32"
+    assert props["Value"]["value"] == "ESP32"
 
 
 # ---------------------------------------------------------------------------

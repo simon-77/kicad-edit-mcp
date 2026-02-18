@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from kiutils.items.common import Property, TitleBlock
+from kiutils.items.common import Effects, Font, Property, TitleBlock
 from kiutils.schematic import Schematic
 
 
@@ -82,11 +82,28 @@ def get_component(schematic_path: str, reference: str) -> dict:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
     for sym in schematic.schematicSymbols:
-        props = {p.key: p.value for p in sym.properties}
-        if props.get("Reference") == reference:
+        raw_props = {p.key: p.value for p in sym.properties}
+        if raw_props.get("Reference") == reference:
+            props: dict[str, Any] = {}
+            for p in sym.properties:
+                hidden = p.effects.hide if p.effects else False
+                props[p.key] = {"value": p.value, "visible": not hidden}
             return props
 
     raise ValueError(f"Component '{reference}' not found in {schematic_path}")
+
+
+_ALWAYS_VISIBLE_PROPS = {"Reference", "Value"}
+
+
+def _make_effects(hide: bool) -> Effects:
+    """Return an Effects instance with standard KiCad font size."""
+    effects = Effects()
+    effects.font = Font()
+    effects.font.height = 1.27
+    effects.font.width = 1.27
+    effects.hide = hide
+    return effects
 
 
 def update_component(
@@ -97,9 +114,13 @@ def update_component(
     """Modify properties of a schematic symbol and save the file.
 
     The ``properties`` dict controls what happens:
+
     - ``{"Value": "100nF"}`` — set the property to a new value.
     - ``{"Voltage": None}`` — remove the property entirely.
     - ``{"dnp": True}`` — set the ``dnp`` flag on the symbol (boolean).
+    - ``{"Voltage": {"value": "3.3V", "visible": True}}`` — set with explicit
+      visibility.  New custom properties default to hidden (``visible=False``)
+      unless overridden here.
 
     Args:
         schematic_path: Path to a .kicad_sch file.
@@ -154,17 +175,33 @@ def update_component(
             else:
                 changes.append(f"'{key}' not present (no-op)")
         else:
+            # Normalize value: plain string or {"value": ..., "visible": ...}
+            if isinstance(value, dict) and "value" in value:
+                raw_value: str = str(value["value"])
+                explicit_visible: Optional[bool] = value.get("visible")
+            else:
+                raw_value = str(value)
+                explicit_visible = None
+
             # Set or update
             existing = next((p for p in target.properties if p.key == key), None)
             if existing is not None:
                 old_val = existing.value
-                existing.value = str(value)
-                changes.append(f"'{key}': '{old_val}' -> '{value}'")
+                existing.value = raw_value
+                # Apply explicit visibility if requested and effects exist
+                if explicit_visible is not None and existing.effects is not None:
+                    existing.effects.hide = not explicit_visible
+                changes.append(f"'{key}': '{old_val}' -> '{raw_value}'")
             else:
-                # Create a new property; kiutils needs a Property object
-                new_prop = Property(key=key, value=str(value))
+                # New property — default hide=True for non-Reference/Value props
+                default_hide = key not in _ALWAYS_VISIBLE_PROPS
+                if explicit_visible is not None:
+                    hide = not explicit_visible
+                else:
+                    hide = default_hide
+                new_prop = Property(key=key, value=raw_value, effects=_make_effects(hide))
                 target.properties.append(new_prop)
-                changes.append(f"added '{key}'='{value}'")
+                changes.append(f"added '{key}'='{raw_value}'")
 
     try:
         schematic.to_file()
