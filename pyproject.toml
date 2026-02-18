@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastmcp",
     "kicad-sch-api",
+    "sexpdata",
 ]
 
 [project.scripts]

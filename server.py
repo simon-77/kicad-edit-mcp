@@ -162,7 +162,7 @@ if _enabled["rename_net"]:
     def rename_net(schematic_path: str, old_name: str, new_name: str) -> str:
         """Rename all net labels in a schematic from old_name to new_name.
 
-        Searches local, global, and hierarchical labels.
+        Searches local and hierarchical labels (global labels not currently supported).
 
         Args:
             schematic_path: Path to a .kicad_sch file.
