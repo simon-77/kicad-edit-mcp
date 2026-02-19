@@ -33,6 +33,17 @@ This makes the server safe to run against production schematics — the worst ca
 | `list_net_classes` | Read | List net class rules and pattern assignments |
 | `update_net_class` | Write | Create or modify net class rules and pattern assignments |
 
+## Important: KiCad Must Be Reopened After Edits
+
+KiCad caches files in memory. Changes made by this server are **not visible until you reopen**:
+
+| File edited | Action required |
+|-------------|-----------------|
+| `.kicad_sch` (schematic) | Close and reopen the schematic |
+| `.kicad_pro` (project/net classes) | Close the **entire project** and reopen |
+
+Edit `.kicad_pro` with KiCad closed — KiCad overwrites it on save, discarding external changes.
+
 ## Docker (recommended)
 
 Build the image once:
