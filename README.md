@@ -1,6 +1,6 @@
 # kicad-edit-mcp
 
-Minimal MCP server for controlled KiCad schematic and project modifications using [kiutils](https://github.com/mvnmgrx/kiutils). Companion to [kicad-analysis](https://github.com/Seeed-Studio/kicad-mcp) (read-only). Handles property modifications only — no topology changes.
+MCP server for controlled KiCad schematic and project modifications. Uses a custom s-expression surgery engine for byte-precise edits — only the targeted value changes; everything else stays byte-identical. Companion to [kicad-analysis](https://github.com/Seeed-Studio/kicad-mcp) (read-only). Handles property modifications only — no topology changes.
 
 ## Philosophy
 
@@ -92,7 +92,7 @@ Read-only mount (no writes possible at the filesystem level):
 ## Installation (local, without Docker)
 
 ```bash
-pip install fastmcp kiutils
+pip install fastmcp sexpdata
 ```
 
 Or with Poetry:

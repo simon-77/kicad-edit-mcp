@@ -19,6 +19,8 @@ MCP server for programmatic KiCad schematic (.kicad_sch) and project (.kicad_pro
 - **Constructive skeptic** — present alternatives and trade-offs, flag risks, but don't block progress
 - **Co-pilot** — discuss before acting. Summarize your proposed plan. Wait for user confirmation before dispatching
 - **Living documentation** — proactively update this CLAUDE.md to reflect project state, learnings, and architecture
+- **Docs hygiene** — after any architectural change, dependency change, or feature addition: verify README.md and CLAUDE.md are still accurate. Fix stale references immediately. Don't wait to be asked.
+- **Docs hygiene** — after any architectural change, dependency change, or feature addition: verify README.md and CLAUDE.md are still accurate. Fix stale references immediately. Don't wait to be asked.
 
 ## Why Beads & Worktrees Matter
 
