@@ -588,14 +588,39 @@ def rename_net(schematic_path: str, old_name: str, new_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 _NETCLASS_FIELD_MAP = {
+    "bus_width": "bus_width",
     "clearance": "clearance",
+    "diff_pair_gap": "diff_pair_gap",
+    "diff_pair_via_gap": "diff_pair_via_gap",
+    "diff_pair_width": "diff_pair_width",
+    "line_style": "line_style",
+    "microvia_diameter": "microvia_diameter",
+    "microvia_drill": "microvia_drill",
+    "pcb_color": "pcb_color",
+    "priority": "priority",
+    "schematic_color": "schematic_color",
     "track_width": "track_width",
     "via_diameter": "via_diameter",
     "via_drill": "via_drill",
-    "microvia_diameter": "microvia_diameter",
-    "microvia_drill": "microvia_drill",
-    "diff_pair_width": "diff_pair_width",
-    "diff_pair_gap": "diff_pair_gap",
+    "wire_width": "wire_width",
+}
+
+_NETCLASS_DEFAULTS: dict[str, Any] = {
+    "bus_width": 12,
+    "clearance": 0.2,
+    "diff_pair_gap": 0.25,
+    "diff_pair_via_gap": 0.25,
+    "diff_pair_width": 0.2,
+    "line_style": 0,
+    "microvia_diameter": 0.3,
+    "microvia_drill": 0.1,
+    "pcb_color": "rgba(0, 0, 0, 0.000)",
+    "priority": 2147483647,
+    "schematic_color": "rgba(0, 0, 0, 0.000)",
+    "track_width": 0.2,
+    "via_diameter": 0.6,
+    "via_drill": 0.3,
+    "wire_width": 6,
 }
 
 
@@ -617,7 +642,7 @@ def _load_project(project_path: str) -> tuple[dict, Path]:
 
 def _save_project(data: dict, path: Path) -> None:
     """Save project data back to disk as pretty JSON."""
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def list_net_classes(project_path: str) -> list[dict]:
@@ -647,13 +672,23 @@ def list_net_classes(project_path: str) -> list[dict]:
         entry: dict = {}
         # Name
         entry["name"] = cls.get("name", "")
-        # Patterns (net wildcard assignments)
+        # Legacy KiCad 6 patterns stored inside class dict
         entry["patterns"] = list(cls.get("nets", []))
-        # Numeric rule fields — include whatever is present
+        # Numeric/string rule fields — include whatever is present
         for field_name in _NETCLASS_FIELD_MAP:
             if field_name in cls:
                 entry[field_name] = cls[field_name]
         results.append(entry)
+
+    # KiCad 9 patterns stored in netclass_patterns[] at net_settings level
+    netclass_patterns: list[dict] = net_settings.get("netclass_patterns", [])
+    for entry in results:
+        cls_patterns = [
+            p["pattern"]
+            for p in netclass_patterns
+            if p.get("netclass") == entry["name"] and "pattern" in p
+        ]
+        entry["patterns"].extend(cls_patterns)
 
     return results
 
@@ -697,7 +732,15 @@ def update_net_class(
 
     created = target is None
     if created:
-        target = {"name": class_name, "nets": []}
+        # Copy all fields from Default class as base; fall back to built-in defaults
+        default_cls = next((c for c in classes if c.get("name") == "Default"), None)
+        base = {
+            k: v
+            for k, v in (default_cls or _NETCLASS_DEFAULTS).items()
+            if k not in ("name", "nets")
+        }
+        base["name"] = class_name
+        target = base
         classes.append(target)
 
     changes: list[str] = []
@@ -710,9 +753,13 @@ def update_net_class(
                 changes.append(f"{field_name}: {old!r} -> {value!r}")
 
     if add_pattern is not None:
-        nets: list = target.setdefault("nets", [])
-        if add_pattern not in nets:
-            nets.append(add_pattern)
+        patterns: list = net_settings.setdefault("netclass_patterns", [])
+        exists = any(
+            p.get("netclass") == class_name and p.get("pattern") == add_pattern
+            for p in patterns
+        )
+        if not exists:
+            patterns.append({"netclass": class_name, "pattern": add_pattern})
             changes.append(f"added pattern '{add_pattern}'")
         else:
             changes.append(f"pattern '{add_pattern}' already present")

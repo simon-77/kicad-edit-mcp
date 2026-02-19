@@ -312,6 +312,30 @@ def test_update_net_class_create_new(pro: Path) -> None:
     result = kicad_helpers.update_net_class(str(pro), "USB")
     assert "Created" in result
     assert "USB" in result
+    # New class must have all 16 KiCad 9 required fields
+    import json
+    data = json.loads(pro.read_text())
+    classes = data["net_settings"]["classes"]
+    usb = next(c for c in classes if c["name"] == "USB")
+    for field in (
+        "bus_width", "clearance", "diff_pair_gap", "diff_pair_via_gap",
+        "diff_pair_width", "line_style", "microvia_diameter", "microvia_drill",
+        "pcb_color", "priority", "schematic_color", "track_width",
+        "via_diameter", "via_drill", "wire_width",
+    ):
+        assert field in usb, f"Missing field: {field}"
+
+
+def test_update_net_class_copies_default_fields(pro: Path) -> None:
+    """New class inherits Default's field values (not hardcoded fallbacks)."""
+    import json
+    # Give Default non-standard track_width
+    kicad_helpers.update_net_class(str(pro), "Default", rules={"track_width": 0.5})
+    kicad_helpers.update_net_class(str(pro), "USB")
+    data = json.loads(pro.read_text())
+    classes = data["net_settings"]["classes"]
+    usb = next(c for c in classes if c["name"] == "USB")
+    assert usb["track_width"] == 0.5
 
 
 def test_update_net_class_add_pattern(pro: Path) -> None:
@@ -319,7 +343,16 @@ def test_update_net_class_add_pattern(pro: Path) -> None:
         str(pro), "USB", add_pattern="USB_D?"
     )
     assert "USB_D?" in result
-    # Verify persisted
+    # Verify pattern in netclass_patterns[], not inside class dict
+    import json
+    data = json.loads(pro.read_text())
+    net_settings = data["net_settings"]
+    patterns = net_settings.get("netclass_patterns", [])
+    assert any(
+        p.get("netclass") == "USB" and p.get("pattern") == "USB_D?"
+        for p in patterns
+    ), "Pattern not found in netclass_patterns"
+    # list_net_classes should surface it
     classes = kicad_helpers.list_net_classes(str(pro))
     usb = next((c for c in classes if c["name"] == "USB"), None)
     assert usb is not None
@@ -343,6 +376,22 @@ def test_update_net_class_duplicate_pattern_noop(pro: Path) -> None:
         str(pro), "USB", add_pattern="USB_D?"
     )
     assert "already present" in result
+    # Confirm only one entry in netclass_patterns
+    import json
+    data = json.loads(pro.read_text())
+    patterns = data["net_settings"].get("netclass_patterns", [])
+    matches = [
+        p for p in patterns
+        if p.get("netclass") == "USB" and p.get("pattern") == "USB_D?"
+    ]
+    assert len(matches) == 1
+
+
+def test_save_project_trailing_newline(pro: Path) -> None:
+    """_save_project must write a trailing newline."""
+    kicad_helpers.update_net_class(str(pro), "Default", rules={"track_width": 0.3})
+    content = pro.read_bytes()
+    assert content.endswith(b"\n"), "Project file must end with newline"
 
 
 # ---------------------------------------------------------------------------
