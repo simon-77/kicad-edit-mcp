@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-<!-- UPDATE THIS: 1-2 sentences describing what this project does and why it exists -->
+MCP server for programmatic KiCad schematic (.kicad_sch) and project (.kicad_pro) editing. Uses a custom s-expression surgery engine (`sexp_surgery.py`) for byte-level precise edits that preserve all file content unchanged outside the edit region.
 
 ## Tech Stack
 
@@ -151,8 +151,11 @@ Log learnings: `bd comment {ID} "LEARNED: [insight]"` — captured automatically
 
 ## Current State
 
-<!--
-ORCHESTRATOR: Update this section as the project evolves.
-Include: active work, recent decisions, known issues, architectural notes.
-Keep it concise — pointers to files are better than duplicated content.
--->
+**Architecture** (as of 2026-02-19):
+- `sexp_surgery.py` — Core engine: byte-span tracking, surgical replace/insert/delete, back-to-front batched edits
+- `kicad_helpers.py` — All schematic/project operations built on SexpDocument (no external KiCad lib dependency)
+- `server.py` — MCP tool definitions, delegates to kicad_helpers
+- `kicad-sch-api` removed entirely; `sexpdata` is the only parsing dependency
+- 100 tests: 40 engine + 39 helpers + 8 server + 13 preservation
+- Supports KiCad 6 and v9 formats (bare `hide` vs `(hide yes)`)
+- Known preserved: mirror flags, DNP, global labels, intersheetrefs, string escaping, justify, fields_autoplaced
