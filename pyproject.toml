@@ -5,7 +5,6 @@ description = "KiCad schematic/project modification MCP server"
 requires-python = ">=3.11"
 dependencies = [
     "fastmcp",
-    "kicad-sch-api",
     "sexpdata",
 ]
 
@@ -13,7 +12,7 @@ dependencies = [
 kicad-edit-mcp = "server:main"
 
 [tool.setuptools]
-py-modules = ["server", "kicad_helpers"]
+py-modules = ["server", "kicad_helpers", "sexp_surgery"]
 
 [build-system]
 requires = ["setuptools>=68"]
