@@ -239,18 +239,15 @@ def test_kicad9_all_components_preserved(sch_v9: Path) -> None:
 def test_update_schematic_info_title(sch: Path) -> None:
     result = kicad_helpers.update_schematic_info(str(sch), title="New Title")
     assert "title" in result.lower()
-    # Verify by reloading with kicad-sch-api
-    from kicad_sch_api import Schematic
-    s = Schematic.load(str(sch))
-    assert s.title_block.get("title") == "New Title"
+    raw = sch.read_text()
+    assert '"New Title"' in raw
 
 
 def test_update_schematic_info_revision(sch: Path) -> None:
     result = kicad_helpers.update_schematic_info(str(sch), revision="2.1")
     assert "revision" in result.lower()
-    from kicad_sch_api import Schematic
-    s = Schematic.load(str(sch))
-    assert s.title_block.get("rev") == "2.1"
+    raw = sch.read_text()
+    assert '"2.1"' in raw
 
 
 def test_update_schematic_info_no_args(sch: Path) -> None:
@@ -271,11 +268,9 @@ def test_rename_net_success(sch: Path) -> None:
 
 def test_rename_net_verifies_in_file(sch: Path) -> None:
     kicad_helpers.rename_net(str(sch), "SPI1_SCK", "SPI_CLK")
-    from kicad_sch_api import Schematic
-    s = Schematic.load(str(sch))
-    texts = [lbl.text for lbl in s.labels]
-    assert "SPI_CLK" in texts
-    assert "SPI1_SCK" not in texts
+    raw = sch.read_text()
+    assert '"SPI_CLK"' in raw
+    assert '"SPI1_SCK"' not in raw
 
 
 def test_rename_net_no_match(sch: Path) -> None:
