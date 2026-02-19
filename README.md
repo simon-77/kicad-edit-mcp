@@ -1,6 +1,6 @@
 # kicad-edit-mcp
 
-MCP server for controlled KiCad schematic and project modifications. Uses a custom s-expression surgery engine for byte-precise edits — only the targeted value changes; everything else stays byte-identical. Companion to [kicad-analysis](https://github.com/Seeed-Studio/kicad-mcp) (read-only). Handles property modifications only — no topology changes.
+MCP server for surgical KiCad schematic and project editing. Pairs with [kicad-mcp-server](https://github.com/Seeed-Studio/kicad-mcp) (analysis) to give AI agents structured read/write access to KiCad projects. Uses a custom s-expression surgery engine — only the targeted value changes; everything else stays byte-identical. Property modifications only, no topology changes.
 
 ## Philosophy
 
