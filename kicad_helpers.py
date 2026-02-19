@@ -1,4 +1,4 @@
-"""Pure Python helper functions for KiCad file manipulation via kicad-sch-api.
+"""Pure Python helper functions for KiCad file manipulation via sexp surgery.
 
 No MCP imports — these are plain functions wired into server.py.
 """
@@ -11,172 +11,64 @@ from typing import Any, Optional
 
 import sexpdata
 
-from kicad_sch_api import Schematic
+from sexp_surgery import SexpDocument, SexpSpan
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-
-def _is_hidden_in_sexp(sexp: Any) -> bool:
-    """Return True if the property S-expression has a hide flag.
-
-    Handles both KiCad 6 bare ``Symbol('hide')`` and KiCad 9
-    ``[Symbol('hide'), Symbol('yes')]`` formats.
-    """
-    if not isinstance(sexp, list):
-        return False
-    for item in sexp:
-        if isinstance(item, list) and len(item) > 0:
-            if isinstance(item[0], sexpdata.Symbol) and str(item[0]) == "effects":
-                # Inspect the effects section
-                for eff_item in item[1:]:
-                    # KiCad 9: (hide yes) or bare (hide)
-                    if (
-                        isinstance(eff_item, list)
-                        and len(eff_item) > 0
-                        and isinstance(eff_item[0], sexpdata.Symbol)
-                        and str(eff_item[0]) == "hide"
-                    ):
-                        if len(eff_item) == 1:
-                            return True  # bare (hide)
-                        val = (
-                            str(eff_item[1]).lower()
-                            if isinstance(eff_item[1], sexpdata.Symbol)
-                            else ""
-                        )
-                        return val in ("yes", "true")
-                    # KiCad 6: bare Symbol('hide')
-                    if isinstance(eff_item, sexpdata.Symbol) and str(eff_item) == "hide":
-                        return True
-    return False
-
-
-def _sync_hidden_properties(comp: Any) -> None:
-    """Sync ``hidden_properties`` set from preserved ``__sexp_`` entries.
-
-    The kicad-sch-api parser silently drops bare ``hide`` tokens (KiCad 6
-    format).  This function fixes up ``hidden_properties`` by reading the
-    preserved S-expressions directly.
-    """
-    hidden: set[str] = set()
-    for key, val in comp._data.properties.items():
-        if key.startswith("__sexp_"):
-            prop_name = key[len("__sexp_"):]
-            if _is_hidden_in_sexp(val):
-                hidden.add(prop_name)
-    comp._data.hidden_properties = hidden
-
-
-def _set_property_hidden(comp: Any, prop_name: str, hidden: bool) -> None:
-    """Update the hide flag for a property in both ``hidden_properties`` and ``__sexp_``.
-
-    Args:
-        comp: ``Component`` object from kicad-sch-api.
-        prop_name: Property name, e.g. "Footprint".
-        hidden: True to hide, False to show.
-    """
-    if hidden:
-        comp._data.hidden_properties.add(prop_name)
-    else:
-        comp._data.hidden_properties.discard(prop_name)
-
-    # Also update the preserved S-expression so serialization is consistent.
-    sexp_key = f"__sexp_{prop_name}"
-    sexp = comp._data.properties.get(sexp_key)
-    if sexp is not None:
-        from kicad_sch_api.parsers.elements.symbol_parser import SymbolParser
-
-        parser = SymbolParser()
-        updated = parser._update_property_hide_flag(list(sexp), hidden)
-        comp._data.properties[sexp_key] = updated
-
-
 _ALWAYS_VISIBLE_PROPS = {"Reference", "Value"}
 
 
-# ---------------------------------------------------------------------------
-# lib_symbols preservation helpers
-# ---------------------------------------------------------------------------
+def _unwrap(value: Any) -> str:
+    """Extract plain string from sexpdata value."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, sexpdata.Symbol):
+        return str(value)
+    return str(value)
 
 
-def _extract_lib_symbols(path: Path) -> dict:
-    """Re-read the .kicad_sch file and extract the lib_symbols section.
+def _prop_value(prop_span: SexpSpan) -> str:
+    """Get the value (3rd element) from a property span's node."""
+    if prop_span and len(prop_span.node) >= 3:
+        return _unwrap(prop_span.node[2])
+    return ""
 
-    kicad-sch-api v0.5.6 has two bugs that empty lib_symbols on save:
-    LibraryParser._parse_lib_symbols() always returns {} and
-    Schematic._sync_components_to_data() rebuilds from an empty symbol cache.
 
-    This workaround reads the raw S-expression tree with sexpdata, finds the
-    lib_symbols node, and returns a dict keyed by symbol name whose values are
-    the raw sexp lists.  LibraryParser._lib_symbols_to_sexp() already handles
-    raw sexp lists by appending them directly (library_parser.py:36-39).
+def _escape_sexp_string(s: str) -> str:
+    """Escape for s-expression quoting."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
 
-    Args:
-        path: Path to the .kicad_sch file to read.
 
-    Returns:
-        Dict mapping symbol name (e.g. "Device:R") to its raw sexp list, or
-        an empty dict if lib_symbols is absent or empty.
+def _find_quoted_string(
+    text: str, start: int, end: int, index: int = 0
+) -> tuple[int, int] | None:
+    """Find the Nth (0-indexed) quoted string in text[start:end].
+
+    Returns (start_pos, end_pos) including the quote characters, or None.
     """
-    text = path.read_text(encoding="utf-8")
-    try:
-        parsed = sexpdata.loads(text)
-    except Exception:
-        return {}
-
-    # parsed is a list: [Symbol('kicad_sch'), ...]
-    for item in parsed[1:]:
-        if not isinstance(item, list) or len(item) < 1:
-            continue
-        if isinstance(item[0], sexpdata.Symbol) and str(item[0]) == "lib_symbols":
-            result: dict = {}
-            for child in item[1:]:
-                if not isinstance(child, list) or len(child) < 2:
+    i = start
+    count = 0
+    while i < end:
+        if text[i] == '"':
+            q_start = i
+            i += 1
+            while i < end:
+                if text[i] == "\\":
+                    i += 2
                     continue
-                if isinstance(child[0], sexpdata.Symbol) and str(child[0]) == "symbol":
-                    name = child[1]
-                    if isinstance(name, str):
-                        result[name] = child
-            return result
-    return {}
-
-
-def _save_with_lib_symbols(sch: Any, path: Path) -> None:
-    """Save a Schematic while preserving the original lib_symbols section.
-
-    kicad-sch-api v0.5.6 bug: Schematic.save() calls _sync_components_to_data()
-    which unconditionally rebuilds self._data["lib_symbols"] from an empty symbol
-    cache, erasing all lib_symbols present in the file.
-
-    Workaround: monkey-patch the instance's _sync_components_to_data so that
-    after the original method runs, the preserved lib_symbols are restored into
-    self._data before FileIOManager writes the file.
-
-    Args:
-        sch: Loaded Schematic object from kicad-sch-api.
-        path: Path to the .kicad_sch file (used both to read lib_symbols and
-            as the save destination).
-
-    Raises:
-        Exception: Propagates any exception raised by sch.save().
-    """
-    preserved = _extract_lib_symbols(path)
-    original_sync = None
-    if preserved:
-        original_sync = sch._sync_components_to_data
-
-        def _patched_sync() -> None:
-            original_sync()
-            sch._data["lib_symbols"] = preserved
-
-        sch._sync_components_to_data = _patched_sync  # type: ignore[method-assign]
-    try:
-        sch.save()
-    finally:
-        if original_sync is not None:
-            sch._sync_components_to_data = original_sync
+                if text[i] == '"':
+                    i += 1
+                    if count == index:
+                        return (q_start, i)
+                    count += 1
+                    break
+                i += 1
+        else:
+            i += 1
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -203,20 +95,33 @@ def list_components(schematic_path: str, filter: Optional[str] = None) -> list[d
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        sch = Schematic.load(str(path))
+        doc = SexpDocument.load(path)
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
     results: list[dict] = []
-    for comp in sch.components:
-        ref = comp.reference
+    for sym_span in doc.find_all("symbol"):
+        node = sym_span.node
+        # Only schematic instances have lib_id, not lib_symbols definitions
+        has_lib_id = any(
+            isinstance(c, list) and c and str(c[0]) == "lib_id" for c in node[1:]
+        )
+        if not has_lib_id:
+            continue
+
+        ref_span = doc.get_property(sym_span, "Reference")
+        val_span = doc.get_property(sym_span, "Value")
+        fp_span = doc.get_property(sym_span, "Footprint")
+
+        ref = _prop_value(ref_span) if ref_span else ""
         if filter is not None and not ref.startswith(filter):
             continue
+
         results.append(
             {
                 "reference": ref,
-                "value": comp.value,
-                "footprint": comp.footprint or "",
+                "value": _prop_value(val_span) if val_span else "",
+                "footprint": _prop_value(fp_span) if fp_span else "",
             }
         )
     return results
@@ -243,26 +148,27 @@ def get_component(schematic_path: str, reference: str) -> dict:
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        sch = Schematic.load(str(path))
+        doc = SexpDocument.load(path)
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
-    comp = sch.components.get(reference)
-    if comp is None:
+    sym_span = doc.find_symbol(reference)
+    if sym_span is None:
         raise ValueError(f"Component '{reference}' not found in {schematic_path}")
 
-    _sync_hidden_properties(comp)
-
     props: dict[str, Any] = {}
-    for name, val in comp.properties.items():
-        if name.startswith("__sexp_"):
+    for child in sym_span.node[1:]:
+        if not (isinstance(child, list) and child and str(child[0]) == "property"):
             continue
-        if isinstance(val, dict):
-            raw_value = val.get("value", "")
-        else:
-            raw_value = str(val)
-        hidden = name in comp._data.hidden_properties
-        props[name] = {"value": raw_value, "visible": not hidden}
+        if len(child) < 2:
+            continue
+        name = _unwrap(child[1])
+        child_span = doc.spans.get(id(child))
+        if child_span is None:
+            continue
+        value = _prop_value(child_span)
+        hidden = doc.is_property_hidden(child_span)
+        props[name] = {"value": value, "visible": not hidden}
 
     return props
 
@@ -307,28 +213,22 @@ def update_component(
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        sch = Schematic.load(str(path))
+        doc = SexpDocument.load(path)
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
-    comp = sch.components.get(reference)
-    if comp is None:
+    sym_span = doc.find_symbol(reference)
+    if sym_span is None:
         raise ValueError(f"Component '{reference}' not found in {schematic_path}")
-
-    # Fix hidden_properties from preserved S-expressions before making changes.
-    _sync_hidden_properties(comp)
 
     changes: list[str] = []
 
     for key, value in properties.items():
         if value is None:
-            # Remove the property
-            removed = comp.remove_property(key)
-            # Also clean up the preserved S-expression and hidden set
-            sexp_key = f"__sexp_{key}"
-            comp._data.properties.pop(sexp_key, None)
-            comp._data.hidden_properties.discard(key)
-            if removed:
+            # Delete the property
+            prop_span = doc.get_property(sym_span, key)
+            if prop_span is not None:
+                doc.delete_span(prop_span)
                 changes.append(f"removed '{key}'")
             else:
                 changes.append(f"'{key}' not present (no-op)")
@@ -348,57 +248,135 @@ def update_component(
                 raw_value = str(value)
                 explicit_visible = None
 
-            # Check if property already exists
-            existing_props = {
-                k: v for k, v in comp.properties.items() if not k.startswith("__sexp_")
-            }
-            prop_exists = key in existing_props
+            prop_span = doc.get_property(sym_span, key)
 
-            if prop_exists:
-                old_val = existing_props[key]
-                if isinstance(old_val, dict):
-                    old_val = old_val.get("value", "")
+            if prop_span is not None:
+                # Property exists — surgically replace value
+                vs = doc.get_property_value_span(prop_span)
+                if vs is not None:
+                    old_val = vs[2]
+                    doc.replace_bytes(vs[0], vs[1], f'"{_escape_sexp_string(raw_value)}"')
+                    changes.append(f"'{key}': '{old_val}' -> '{raw_value}'")
+                else:
+                    changes.append(f"'{key}': (could not locate value span)")
 
-                comp.set_property(key, raw_value)
-
-                # Standard properties have dedicated _data fields that
-                # _symbol_to_sexp reads directly — update them too.
-                if key == "Value":
-                    comp._data.value = raw_value
-                elif key == "Reference":
-                    comp._data.reference = raw_value
-                elif key == "Footprint":
-                    comp._data.footprint = raw_value
-
-                # Also update value in preserved __sexp_
-                sexp_key = f"__sexp_{key}"
-                sexp = comp._data.properties.get(sexp_key)
-                if sexp is not None and isinstance(sexp, list) and len(sexp) >= 3:
-                    sexp = list(sexp)
-                    sexp[2] = raw_value
-                    comp._data.properties[sexp_key] = sexp
-
-                # Apply explicit visibility if provided (else preserve existing)
+                # Handle visibility change if explicitly requested
                 if explicit_visible is not None:
-                    _set_property_hidden(comp, key, not explicit_visible)
-
-                changes.append(f"'{key}': '{old_val}' -> '{raw_value}'")
+                    _update_property_visibility(doc, prop_span, explicit_visible)
             else:
-                # New property — default hide=True for non-Reference/Value props
+                # New property — insert before symbol's closing paren
                 default_hide = key not in _ALWAYS_VISIBLE_PROPS
                 hide = (not explicit_visible) if explicit_visible is not None else default_hide
 
-                # Use add_property on the underlying SchematicSymbol
-                comp._data.add_property(key, raw_value, hidden=hide)
+                at_str = _get_symbol_at(sym_span)
+                hide_str = " (hide yes)" if hide else ""
+                new_prop = (
+                    f'\n    (property "{_escape_sexp_string(key)}" '
+                    f'"{_escape_sexp_string(raw_value)}" {at_str}\n'
+                    f"      (effects (font (size 1.27 1.27)){hide_str})\n"
+                    f"    )"
+                )
+                doc.insert_before_end(sym_span, new_prop)
                 changes.append(f"added '{key}'='{raw_value}'")
 
     try:
-        _save_with_lib_symbols(sch, path)
+        doc.save(path)
     except Exception as exc:
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 
     changes_str = "; ".join(changes) if changes else "no changes"
     return f"Updated {reference}: {changes_str}"
+
+
+def _get_symbol_at(sym_span: SexpSpan) -> str:
+    """Extract (at ...) string from a symbol node, defaulting to (at 0 0 0)."""
+    for child in sym_span.node[1:]:
+        if isinstance(child, list) and child and str(child[0]) == "at":
+            parts = [str(x) for x in child[1:]]
+            return f"(at {' '.join(parts)})"
+    return "(at 0 0 0)"
+
+
+def _update_property_visibility(
+    doc: SexpDocument, prop_span: SexpSpan, visible: bool
+) -> None:
+    """Toggle the hide flag in a property span using text scanning.
+
+    Manipulates the text directly within the property span's effects section.
+    """
+    text = doc.text
+    start = prop_span.start
+    end = prop_span.end
+    prop_text = text[start:end]
+
+    # Find the effects section within the property text
+    effects_idx = prop_text.find("(effects")
+    if effects_idx == -1:
+        # No effects section, nothing to do for hiding
+        return
+
+    effects_start = start + effects_idx
+
+    # Find the closing paren of effects section
+    depth = 0
+    i = effects_start
+    in_str = False
+    while i < end:
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                effects_end = i + 1
+                break
+        i += 1
+    else:
+        return
+
+    effects_text = text[effects_start:effects_end]
+
+    if not visible:
+        # Need to hide: add (hide yes) or bare hide if not already present
+        # Check if already hidden
+        if "(hide yes)" in effects_text or " hide)" in effects_text:
+            return  # already hidden
+        # Insert before effects closing paren
+        insert_pos = effects_end - 1
+        doc.replace_bytes(insert_pos, insert_pos, " (hide yes)")
+    else:
+        # Need to show: remove hide token
+        # Handle (hide yes) form
+        hide_yes_pos = effects_text.find(" (hide yes)")
+        if hide_yes_pos != -1:
+            abs_pos = effects_start + hide_yes_pos
+            doc.replace_bytes(abs_pos, abs_pos + len(" (hide yes)"), "")
+            return
+        # Handle bare " hide)" form (KiCad 6)
+        # Look for " hide)" at end of effects
+        bare_pos = effects_text.rfind(" hide)")
+        if bare_pos != -1:
+            abs_pos = effects_start + bare_pos
+            # Replace " hide)" with ")"
+            doc.replace_bytes(abs_pos, abs_pos + len(" hide)"), ")")
+            return
+        # Handle "hide" as Symbol just before closing paren
+        bare2_pos = effects_text.rfind(" hide\n")
+        if bare2_pos != -1:
+            abs_pos = effects_start + bare2_pos
+            doc.replace_bytes(abs_pos, abs_pos + len(" hide\n"), "\n")
 
 
 def update_schematic_info(
@@ -432,46 +410,38 @@ def update_schematic_info(
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        sch = Schematic.load(str(path))
+        doc = SexpDocument.load(path)
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
-    # Read current title block values (preserve fields not being updated)
-    tb = sch.title_block  # dict: {title, rev, date, company, comments}
-    current_title = tb.get("title", "")
-    current_rev = tb.get("rev", "")
-    current_date = tb.get("date", "")
-    current_company = tb.get("company", "")
-    current_comments: dict = dict(tb.get("comments", {}))
+    tb_span = doc.find_title_block()
+    if tb_span is None:
+        raise ValueError("No title_block found in schematic")
 
     updated: list[str] = []
 
+    # Map field name → (sexp key, value, display name)
+    fields: list[tuple[str, Any, str]] = []
     if title is not None:
-        current_title = title
-        updated.append(f"title='{title}'")
+        fields.append(("title", title, f"title='{title}'"))
     if revision is not None:
-        current_rev = revision
-        updated.append(f"revision='{revision}'")
+        fields.append(("rev", revision, f"revision='{revision}'"))
     if date is not None:
-        current_date = date
-        updated.append(f"date='{date}'")
+        fields.append(("date", date, f"date='{date}'"))
     if company is not None:
-        current_company = company
-        updated.append(f"company='{company}'")
+        fields.append(("company", company, f"company='{company}'"))
+
+    for sexp_key, new_val, label in fields:
+        _update_title_block_field(doc, tb_span, sexp_key, new_val)
+        updated.append(label)
+
+    # Author is special: (comment 1 "...")
     if author is not None:
-        current_comments[1] = author
+        _update_title_block_comment(doc, tb_span, 1, author)
         updated.append(f"author='{author}' (comment 1)")
 
-    sch.set_title_block(
-        title=current_title,
-        date=current_date,
-        rev=current_rev,
-        company=current_company,
-        comments=current_comments,
-    )
-
     try:
-        _save_with_lib_symbols(sch, path)
+        doc.save(path)
     except Exception as exc:
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 
@@ -479,11 +449,96 @@ def update_schematic_info(
     return f"Updated title block: {updated_str}"
 
 
+def _update_title_block_field(
+    doc: SexpDocument, tb_span: SexpSpan, key: str, new_val: str
+) -> None:
+    """Update or insert a simple title_block field like (title "...") or (rev "...")."""
+    text = doc.text
+    tb_text = text[tb_span.start:tb_span.end]
+
+    # Find the field node within tb_text using a simple scan
+    # Field format: (key "value")  or  (key "value"\n  )
+    search = f"({key} "
+    field_idx = tb_text.find(search)
+    if field_idx != -1:
+        abs_field_start = tb_span.start + field_idx
+        # Find the quoted string value within this field
+        field_end = _find_node_end(text, abs_field_start, tb_span.end)
+        if field_end is None:
+            return
+        # Find the first quoted string in this field
+        qs = _find_quoted_string(text, abs_field_start, field_end, index=0)
+        if qs is not None:
+            doc.replace_bytes(qs[0], qs[1], f'"{_escape_sexp_string(new_val)}"')
+    else:
+        # Field doesn't exist, insert before title_block closing paren
+        doc.insert_before_end(
+            tb_span, f'\n    ({key} "{_escape_sexp_string(new_val)}")'
+        )
+
+
+def _update_title_block_comment(
+    doc: SexpDocument, tb_span: SexpSpan, number: int, new_val: str
+) -> None:
+    """Update or insert (comment N "value") in title_block."""
+    text = doc.text
+    tb_text = text[tb_span.start:tb_span.end]
+
+    # Format: (comment 1 "value")
+    search = f"(comment {number} "
+    field_idx = tb_text.find(search)
+    if field_idx != -1:
+        abs_field_start = tb_span.start + field_idx
+        field_end = _find_node_end(text, abs_field_start, tb_span.end)
+        if field_end is None:
+            return
+        # The quoted string is the 2nd quoted string (after key="comment", number is not quoted)
+        # Actually: (comment 1 "value") — only 1 quoted string
+        qs = _find_quoted_string(text, abs_field_start, field_end, index=0)
+        if qs is not None:
+            doc.replace_bytes(qs[0], qs[1], f'"{_escape_sexp_string(new_val)}"')
+    else:
+        doc.insert_before_end(
+            tb_span,
+            f'\n    (comment {number} "{_escape_sexp_string(new_val)}")',
+        )
+
+
+def _find_node_end(text: str, start: int, limit: int) -> int | None:
+    """Find the closing paren of the s-expression starting at text[start]."""
+    if start >= limit or text[start] != "(":
+        return None
+    depth = 0
+    i = start
+    in_str = False
+    while i < limit:
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return None
+
+
 def rename_net(schematic_path: str, old_name: str, new_name: str) -> str:
     """Rename all net labels matching ``old_name`` to ``new_name``.
 
-    Searches local and hierarchical labels. Note: global labels are not
-    exposed by kicad-sch-api's label collection at this time.
+    Searches local labels, hierarchical labels, AND global labels.
 
     Args:
         schematic_path: Path to a .kicad_sch file.
@@ -501,27 +556,27 @@ def rename_net(schematic_path: str, old_name: str, new_name: str) -> str:
         raise ValueError(f"Schematic file not found: {schematic_path}")
 
     try:
-        sch = Schematic.load(str(path))
+        doc = SexpDocument.load(path)
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
     count = 0
-
-    for label in sch.labels:
-        if label.text == old_name:
-            label.text = new_name
-            count += 1
-
-    for label in sch.hierarchical_labels:
-        if label.text == old_name:
-            label.text = new_name
-            count += 1
+    for label_type in ("label", "hierarchical_label", "global_label"):
+        for label_span in doc.find_labels(label_type, text=old_name):
+            # The label text is the second element (index 1) of the node
+            # Scan for first quoted string in the label span
+            vs = _find_quoted_string(
+                doc.text, label_span.start, label_span.end, index=0
+            )
+            if vs is not None:
+                doc.replace_bytes(vs[0], vs[1], f'"{_escape_sexp_string(new_name)}"')
+                count += 1
 
     if count == 0:
         return f"No labels named '{old_name}' found — nothing changed"
 
     try:
-        _save_with_lib_symbols(sch, path)
+        doc.save(path)
     except Exception as exc:
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 
