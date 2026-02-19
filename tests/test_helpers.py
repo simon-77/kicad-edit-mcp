@@ -348,3 +348,48 @@ def test_update_net_class_duplicate_pattern_noop(pro: Path) -> None:
         str(pro), "USB", add_pattern="USB_D?"
     )
     assert "already present" in result
+
+
+# ---------------------------------------------------------------------------
+# lib_symbols preservation (regression for kicad-sch-api v0.5.6 bugs)
+# ---------------------------------------------------------------------------
+
+
+def test_lib_symbols_preserved_after_update(sch: Path) -> None:
+    """lib_symbols must survive round-trip through update_component."""
+    original = sch.read_text()
+    assert '(symbol "Device:R"' in original
+
+    kicad_helpers.update_component(str(sch), "R1", {"Value": "4k7"})
+
+    saved = sch.read_text()
+    assert '(symbol "Device:R"' in saved
+    assert '(symbol "Device:C"' in saved
+    assert '(symbol "Device:IC"' in saved
+
+
+def test_lib_symbols_preserved_after_rename_net(sch: Path) -> None:
+    """lib_symbols must survive round-trip through rename_net."""
+    kicad_helpers.rename_net(str(sch), "SPI1_SCK", "SPI_CLK")
+    saved = sch.read_text()
+    assert '(symbol "Device:R"' in saved
+    assert '(symbol "Device:C"' in saved
+    assert '(symbol "Device:IC"' in saved
+
+
+def test_lib_symbols_preserved_after_info_update(sch: Path) -> None:
+    """lib_symbols must survive round-trip through update_schematic_info."""
+    kicad_helpers.update_schematic_info(str(sch), title="New Title")
+    saved = sch.read_text()
+    assert '(symbol "Device:R"' in saved
+    assert '(symbol "Device:C"' in saved
+    assert '(symbol "Device:IC"' in saved
+
+
+def test_kicad9_lib_symbols_preserved_after_update(sch_v9: Path) -> None:
+    """KiCad 9: lib_symbols must survive round-trip through update_component."""
+    kicad_helpers.update_component(str(sch_v9), "R1", {"Value": "4k7"})
+    saved = sch_v9.read_text()
+    assert '(symbol "Device:R"' in saved
+    assert '(symbol "Device:C"' in saved
+    assert '(symbol "Device:IC"' in saved

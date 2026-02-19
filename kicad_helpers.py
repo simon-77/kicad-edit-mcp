@@ -97,6 +97,89 @@ _ALWAYS_VISIBLE_PROPS = {"Reference", "Value"}
 
 
 # ---------------------------------------------------------------------------
+# lib_symbols preservation helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_lib_symbols(path: Path) -> dict:
+    """Re-read the .kicad_sch file and extract the lib_symbols section.
+
+    kicad-sch-api v0.5.6 has two bugs that empty lib_symbols on save:
+    LibraryParser._parse_lib_symbols() always returns {} and
+    Schematic._sync_components_to_data() rebuilds from an empty symbol cache.
+
+    This workaround reads the raw S-expression tree with sexpdata, finds the
+    lib_symbols node, and returns a dict keyed by symbol name whose values are
+    the raw sexp lists.  LibraryParser._lib_symbols_to_sexp() already handles
+    raw sexp lists by appending them directly (library_parser.py:36-39).
+
+    Args:
+        path: Path to the .kicad_sch file to read.
+
+    Returns:
+        Dict mapping symbol name (e.g. "Device:R") to its raw sexp list, or
+        an empty dict if lib_symbols is absent or empty.
+    """
+    text = path.read_text(encoding="utf-8")
+    try:
+        parsed = sexpdata.loads(text)
+    except Exception:
+        return {}
+
+    # parsed is a list: [Symbol('kicad_sch'), ...]
+    for item in parsed[1:]:
+        if not isinstance(item, list) or len(item) < 1:
+            continue
+        if isinstance(item[0], sexpdata.Symbol) and str(item[0]) == "lib_symbols":
+            result: dict = {}
+            for child in item[1:]:
+                if not isinstance(child, list) or len(child) < 2:
+                    continue
+                if isinstance(child[0], sexpdata.Symbol) and str(child[0]) == "symbol":
+                    name = child[1]
+                    if isinstance(name, str):
+                        result[name] = child
+            return result
+    return {}
+
+
+def _save_with_lib_symbols(sch: Any, path: Path) -> None:
+    """Save a Schematic while preserving the original lib_symbols section.
+
+    kicad-sch-api v0.5.6 bug: Schematic.save() calls _sync_components_to_data()
+    which unconditionally rebuilds self._data["lib_symbols"] from an empty symbol
+    cache, erasing all lib_symbols present in the file.
+
+    Workaround: monkey-patch the instance's _sync_components_to_data so that
+    after the original method runs, the preserved lib_symbols are restored into
+    self._data before FileIOManager writes the file.
+
+    Args:
+        sch: Loaded Schematic object from kicad-sch-api.
+        path: Path to the .kicad_sch file (used both to read lib_symbols and
+            as the save destination).
+
+    Raises:
+        Exception: Propagates any exception raised by sch.save().
+    """
+    preserved = _extract_lib_symbols(path)
+    original_sync = None
+    if preserved:
+        original_sync = sch._sync_components_to_data
+
+        def _patched_sync() -> None:
+            original_sync()
+            sch._data["lib_symbols"] = preserved
+
+        sch._sync_components_to_data = _patched_sync  # type: ignore[method-assign]
+    try:
+        sch.save()
+    finally:
+        if original_sync is not None:
+            sch._sync_components_to_data = original_sync
+
+
+# ---------------------------------------------------------------------------
 # Schematic helpers
 # ---------------------------------------------------------------------------
 
@@ -310,7 +393,7 @@ def update_component(
                 changes.append(f"added '{key}'='{raw_value}'")
 
     try:
-        sch.save()
+        _save_with_lib_symbols(sch, path)
     except Exception as exc:
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 
@@ -388,7 +471,7 @@ def update_schematic_info(
     )
 
     try:
-        sch.save()
+        _save_with_lib_symbols(sch, path)
     except Exception as exc:
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 
@@ -438,7 +521,7 @@ def rename_net(schematic_path: str, old_name: str, new_name: str) -> str:
         return f"No labels named '{old_name}' found — nothing changed"
 
     try:
-        sch.save()
+        _save_with_lib_symbols(sch, path)
     except Exception as exc:
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 
