@@ -14,6 +14,7 @@ import kicad_helpers
 FIXTURES = Path(__file__).parent / "fixtures"
 SCH_FIXTURE = FIXTURES / "test_schematic.kicad_sch"
 SCH_V9_FIXTURE = FIXTURES / "test_schematic_v9.kicad_sch"
+SCH_MULTI_FIXTURE = FIXTURES / "test_multiunit.kicad_sch"
 PRO_FIXTURE = FIXTURES / "test_project.kicad_pro"
 
 
@@ -30,6 +31,14 @@ def sch_v9(tmp_path: Path) -> Path:
     """Copy KiCad 9 schematic fixture to tmp_path for safe mutation."""
     dest = tmp_path / "test_v9.kicad_sch"
     shutil.copy(SCH_V9_FIXTURE, dest)
+    return dest
+
+
+@pytest.fixture()
+def sch_multi(tmp_path: Path) -> Path:
+    """Copy multi-unit schematic fixture to tmp_path for safe mutation."""
+    dest = tmp_path / "test_multi.kicad_sch"
+    shutil.copy(SCH_MULTI_FIXTURE, dest)
     return dest
 
 
@@ -437,3 +446,117 @@ def test_kicad9_lib_symbols_preserved_after_update(sch_v9: Path) -> None:
     assert '(symbol "Device:R"' in saved
     assert '(symbol "Device:C"' in saved
     assert '(symbol "Device:IC"' in saved
+
+
+# ---------------------------------------------------------------------------
+# Multi-unit symbol support
+# ---------------------------------------------------------------------------
+
+
+def test_get_component_multiunit_reports_units(sch_multi: Path) -> None:
+    """get_component on a 3-unit symbol reports _units metadata."""
+    props = kicad_helpers.get_component(str(sch_multi), "U2")
+    assert props["Value"]["value"] == "LM358"
+    assert props["_units"]["value"] == "3"
+
+
+def test_get_component_singleunit_no_units_key(sch_multi: Path) -> None:
+    """Single-unit symbols should not have _units metadata."""
+    props = kicad_helpers.get_component(str(sch_multi), "R1")
+    assert "_units" not in props
+
+
+def test_update_component_multiunit_updates_all(sch_multi: Path) -> None:
+    """update_component must update all units of a multi-unit symbol."""
+    result = kicad_helpers.update_component(
+        str(sch_multi), "U2",
+        {"Datasheet": "https://example.com/datasheet/lm358-rev2"},
+    )
+    assert "3 units" in result
+
+    # Re-parse and verify all 3 units have the new datasheet
+    from sexp_surgery import SexpDocument
+    doc = SexpDocument.load(Path(sch_multi))
+    units = doc.find_symbol_units("U2")
+    assert len(units) == 3
+    for unit in units:
+        ds = doc.get_property(unit, "Datasheet")
+        assert ds is not None
+        text = doc.text[ds.start:ds.end]
+        assert "lm358-rev2" in text
+
+
+def test_update_component_multiunit_add_new_prop(sch_multi: Path) -> None:
+    """Adding a new property to a multi-unit symbol should add it to all units."""
+    kicad_helpers.update_component(
+        str(sch_multi), "U2",
+        {"MPN": "LM358ADR"},
+    )
+
+    from sexp_surgery import SexpDocument
+    doc = SexpDocument.load(Path(sch_multi))
+    units = doc.find_symbol_units("U2")
+    assert len(units) == 3
+    for unit in units:
+        mpn = doc.get_property(unit, "MPN")
+        assert mpn is not None, f"MPN missing on unit at offset {unit.start}"
+        text = doc.text[mpn.start:mpn.end]
+        assert "LM358ADR" in text
+
+
+def test_update_component_multiunit_remove_prop(sch_multi: Path) -> None:
+    """Removing a property from a multi-unit symbol should remove from all units."""
+    kicad_helpers.update_component(
+        str(sch_multi), "U2", {"Datasheet": None},
+    )
+
+    from sexp_surgery import SexpDocument
+    doc = SexpDocument.load(Path(sch_multi))
+    units = doc.find_symbol_units("U2")
+    assert len(units) == 3
+    for unit in units:
+        ds = doc.get_property(unit, "Datasheet")
+        assert ds is None, f"Datasheet still present on unit at offset {unit.start}"
+
+
+def test_update_component_singleunit_unchanged(sch_multi: Path) -> None:
+    """Single-unit symbols should still work normally."""
+    result = kicad_helpers.update_component(
+        str(sch_multi), "R1", {"Value": "4k7"},
+    )
+    assert "units" not in result
+    props = kicad_helpers.get_component(str(sch_multi), "R1")
+    assert props["Value"]["value"] == "4k7"
+
+
+def test_units_metadata_not_written_on_roundtrip(sch_multi: Path) -> None:
+    """_units key from get_component must not be written as a real property."""
+    props = kicad_helpers.get_component(str(sch_multi), "U2")
+    assert "_units" in props
+    # Round-trip: pass entire props dict back to update_component
+    kicad_helpers.update_component(str(sch_multi), "U2", props)
+
+    from sexp_surgery import SexpDocument
+    doc = SexpDocument.load(Path(sch_multi))
+    for unit in doc.find_symbol_units("U2"):
+        assert doc.get_property(unit, "_units") is None
+
+
+def test_update_component_multiunit_multiple_props(sch_multi: Path) -> None:
+    """Multiple property changes in one call across all units."""
+    kicad_helpers.update_component(
+        str(sch_multi), "U2",
+        {"Value": "LM358B", "MPN": "LM358ADR"},
+    )
+
+    from sexp_surgery import SexpDocument
+    doc = SexpDocument.load(Path(sch_multi))
+    units = doc.find_symbol_units("U2")
+    assert len(units) == 3
+    for unit in units:
+        val = doc.get_property(unit, "Value")
+        assert val is not None
+        assert "LM358B" in doc.text[val.start:val.end]
+        mpn = doc.get_property(unit, "MPN")
+        assert mpn is not None
+        assert "LM358ADR" in doc.text[mpn.start:mpn.end]

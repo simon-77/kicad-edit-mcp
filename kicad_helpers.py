@@ -139,6 +139,11 @@ def get_component(schematic_path: str, reference: str) -> dict:
         keys, e.g. ``{"Reference": {"value": "C5", "visible": True},
         "Footprint": {"value": "...", "visible": False}}``.
 
+        For multi-unit symbols, properties are read from the first unit
+        (canonical) and a ``_units`` metadata key is added with the unit
+        count.  Keys starting with ``_`` are metadata and are ignored by
+        ``update_component``.
+
     Raises:
         ValueError: If the file doesn't exist, can't be parsed, or the
             component is not found.
@@ -152,10 +157,12 @@ def get_component(schematic_path: str, reference: str) -> dict:
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
-    sym_span = doc.find_symbol(reference)
-    if sym_span is None:
+    unit_spans = doc.find_symbol_units(reference)
+    if not unit_spans:
         raise ValueError(f"Component '{reference}' not found in {schematic_path}")
 
+    # Read properties from first unit (canonical)
+    sym_span = unit_spans[0]
     props: dict[str, Any] = {}
     for child in sym_span.node[1:]:
         if not (isinstance(child, list) and child and str(child[0]) == "property"):
@@ -169,6 +176,9 @@ def get_component(schematic_path: str, reference: str) -> dict:
         value = _prop_value(child_span)
         hidden = doc.is_property_hidden(child_span)
         props[name] = {"value": value, "visible": not hidden}
+
+    if len(unit_spans) > 1:
+        props["_units"] = {"value": str(len(unit_spans)), "visible": False}
 
     return props
 
@@ -208,6 +218,9 @@ def update_component(
             "'dnp' flag is not supported — use in_bom/on_board or a custom property instead"
         )
 
+    # Strip metadata keys injected by get_component (e.g. _units)
+    properties = {k: v for k, v in properties.items() if not k.startswith("_")}
+
     path = Path(schematic_path)
     if not path.exists():
         raise ValueError(f"Schematic file not found: {schematic_path}")
@@ -217,18 +230,22 @@ def update_component(
     except Exception as exc:
         raise ValueError(f"Failed to parse schematic: {exc}") from exc
 
-    sym_span = doc.find_symbol(reference)
-    if sym_span is None:
+    unit_spans = doc.find_symbol_units(reference)
+    if not unit_spans:
         raise ValueError(f"Component '{reference}' not found in {schematic_path}")
 
     changes: list[str] = []
 
     for key, value in properties.items():
         if value is None:
-            # Delete the property
-            prop_span = doc.get_property(sym_span, key)
-            if prop_span is not None:
-                doc.delete_span(prop_span)
+            # Delete the property from all units
+            deleted = 0
+            for sym_span in unit_spans:
+                prop_span = doc.get_property(sym_span, key)
+                if prop_span is not None:
+                    doc.delete_span(prop_span)
+                    deleted += 1
+            if deleted:
                 changes.append(f"removed '{key}'")
             else:
                 changes.append(f"'{key}' not present (no-op)")
@@ -248,36 +265,45 @@ def update_component(
                 raw_value = str(value)
                 explicit_visible = None
 
-            prop_span = doc.get_property(sym_span, key)
+            reported = False
+            for sym_span in unit_spans:
+                prop_span = doc.get_property(sym_span, key)
 
-            if prop_span is not None:
-                # Property exists — surgically replace value
-                vs = doc.get_property_value_span(prop_span)
-                if vs is not None:
-                    old_val = vs[2]
-                    doc.replace_bytes(vs[0], vs[1], f'"{_escape_sexp_string(raw_value)}"')
-                    changes.append(f"'{key}': '{old_val}' -> '{raw_value}'")
+                if prop_span is not None:
+                    # Property exists — surgically replace value
+                    vs = doc.get_property_value_span(prop_span)
+                    if vs is not None:
+                        old_val = vs[2]
+                        doc.replace_bytes(vs[0], vs[1], f'"{_escape_sexp_string(raw_value)}"')
+                        if not reported:
+                            changes.append(f"'{key}': '{old_val}' -> '{raw_value}'")
+                            reported = True
+                    elif not reported:
+                        changes.append(f"'{key}': (could not locate value span)")
+                        reported = True
+
+                    # Handle visibility change if explicitly requested
+                    if explicit_visible is not None:
+                        _update_property_visibility(doc, prop_span, explicit_visible)
                 else:
-                    changes.append(f"'{key}': (could not locate value span)")
+                    # New property — insert before symbol's closing paren
+                    default_hide = key not in _ALWAYS_VISIBLE_PROPS
+                    hide = (not explicit_visible) if explicit_visible is not None else default_hide
 
-                # Handle visibility change if explicitly requested
-                if explicit_visible is not None:
-                    _update_property_visibility(doc, prop_span, explicit_visible)
-            else:
-                # New property — insert before symbol's closing paren
-                default_hide = key not in _ALWAYS_VISIBLE_PROPS
-                hide = (not explicit_visible) if explicit_visible is not None else default_hide
+                    at_str = _get_symbol_at(sym_span)
+                    hide_str = " (hide yes)" if hide else ""
+                    new_prop = (
+                        f'\n    (property "{_escape_sexp_string(key)}" '
+                        f'"{_escape_sexp_string(raw_value)}" {at_str}\n'
+                        f"      (effects (font (size 1.27 1.27)){hide_str})\n"
+                        f"    )"
+                    )
+                    doc.insert_before_end(sym_span, new_prop)
+                    if not reported:
+                        changes.append(f"added '{key}'='{raw_value}'")
+                        reported = True
 
-                at_str = _get_symbol_at(sym_span)
-                hide_str = " (hide yes)" if hide else ""
-                new_prop = (
-                    f'\n    (property "{_escape_sexp_string(key)}" '
-                    f'"{_escape_sexp_string(raw_value)}" {at_str}\n'
-                    f"      (effects (font (size 1.27 1.27)){hide_str})\n"
-                    f"    )"
-                )
-                doc.insert_before_end(sym_span, new_prop)
-                changes.append(f"added '{key}'='{raw_value}'")
+    n_units = len(unit_spans)
 
     try:
         doc.save(path)
@@ -285,7 +311,8 @@ def update_component(
         raise ValueError(f"Failed to save schematic: {exc}") from exc
 
     changes_str = "; ".join(changes) if changes else "no changes"
-    return f"Updated {reference}: {changes_str}"
+    units_note = f" ({n_units} units)" if n_units > 1 else ""
+    return f"Updated {reference}{units_note}: {changes_str}"
 
 
 def _get_symbol_at(sym_span: SexpSpan) -> str:

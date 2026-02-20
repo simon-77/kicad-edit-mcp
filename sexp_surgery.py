@@ -56,8 +56,17 @@ class SexpDocument:
 
     def find_symbol(self, reference: str) -> SexpSpan | None:
         """Find a schematic symbol by its Reference property value."""
+        units = self.find_symbol_units(reference)
+        return units[0] if units else None
+
+    def find_symbol_units(self, reference: str) -> list[SexpSpan]:
+        """Find all units of a schematic symbol by Reference property value.
+
+        Multi-unit symbols (e.g. dual opamps) appear as multiple (symbol ...)
+        nodes sharing the same Reference designator.  Returns all of them.
+        """
+        results: list[SexpSpan] = []
         for sym_span in self.find_all("symbol"):
-            # Only consider schematic instances (have lib_id), not lib_symbols
             node = sym_span.node
             if not _has_child_key(node, "lib_id"):
                 continue
@@ -66,8 +75,8 @@ class SexpDocument:
                 continue
             val = _property_value(ref_span.node)
             if val == reference:
-                return sym_span
-        return None
+                results.append(sym_span)
+        return results
 
     def find_labels(
         self, label_type: str, text: str | None = None
